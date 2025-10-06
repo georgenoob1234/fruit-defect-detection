@@ -1,0 +1,22 @@
+# Default ignored files
+/shelf/
+/workspace.xml
+# PyCharm
+.idea/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+
+# Git
+.git/
+
+# OS
+.DS_Store
+Thumbs.db
