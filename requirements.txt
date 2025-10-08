@@ -11,7 +11,3 @@ PyQt5
 Pillow
 albumentations
 
-# Development tools
-pytest
-black
-flake8
