@@ -1,13 +1,8 @@
-# Core dependencies
-numpy
-pandas
-matplotlib
-seaborn
-opencv-python
-torch
 ultralytics
+opencv-python
+requests
+PyYAML
+numpy
+torch
 onnx
-PyQt5
-Pillow
-albumentations
-
+streamlit

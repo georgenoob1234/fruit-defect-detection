@@ -1,0 +1,38 @@
+# Application Configuration for Fruit Defect Detection System
+
+# Logging Settings
+logging:
+  level: "INFO"
+  file_path: "logs/app.log"
+
+# GUI Settings
+gui:
+  show_gui: true
+  show_defect_status: true  # When true, shows both fruit type and defect status; when false, shows only fruit type
+
+# Web API Settings
+api:
+  enabled: false
+  base_url: "http://localhost:8000"
+  endpoint: "/api/detections"
+  timeout: 10
+
+# Camera Settings
+camera:
+  source: 0
+  width: 640
+  height: 480
+  fps: 30
+
+# Static Image Settings
+static_image:
+  enabled: false
+  image_path: "/home/george/PycharmProjects/fruit-defect-detection/data/defect_320/test/images/194016205_jpg.rf.93edafc2a2687806f1b19f5ad13144d8.jpg"
+
+# Photo Capture Settings
+# Note: Photos are always captured locally for logging purposes.
+# Only defective fruit photos are sent to the API.
+photo_capture:
+  capture_defective_only: false  # This setting no longer controls local capture, only API sending
+  image_save_path: "captured_images/"
+  image_format: "jpg"

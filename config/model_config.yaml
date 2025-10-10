@@ -1,0 +1,20 @@
+# Model Configuration for Fruit Defect Detection System
+
+# Fruit Detection Model Settings
+fruit_detection:
+  model_path: "models/fruit_detection/fruit_detector.pt"
+  confidence_threshold: 0.85  # Standard threshold for fruit detection
+  target_classes:
+    - apple
+    - banana
+    - tomato
+
+
+# Defect Classification/Segmentation Model Settings
+defect_detection:
+  enabled: true  # Set to false to disable defect detection and only use fruit detection
+  model_path: "models/defect_segmentation/defect_segmenter.pt"
+  confidence_threshold: 0.5  # Lower threshold to catch more potential defects
+  target_classes:
+    - defective
+    - defect

@@ -1,0 +1,7 @@
+# Authorized Telegram User IDs for Fruit Defect Detection System
+
+# List of authorized user IDs who can receive notifications
+telegram_users:
+  user_ids: 
+    - 123456789
+    - 987654321
