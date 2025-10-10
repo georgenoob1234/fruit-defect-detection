@@ -205,7 +205,9 @@ class FruitDefectDetectionApp:
                     frame = cv2.imread(self.static_image_path)
                     if frame is None:
                         self.logger.error(f"Failed to read static image: {self.static_image_path}")
-                        break
+                        # Instead of breaking, wait a bit and continue the loop
+                        time.sleep(0.1)
+                        continue
                     self.logger.info(f"Successfully read static image with shape: {frame.shape}")
                     ret = True
                 else:
@@ -217,63 +219,68 @@ class FruitDefectDetectionApp:
                     time.sleep(0.1)
                     continue
                 
-                # Run detection pipeline
-                detection_results, processed_frame = self.detection_pipeline.process_frame(frame)
-                
-                # Copy frame for display to avoid modifying the original during processing
-                display_frame = processed_frame.copy() if self.show_gui else None
-                
-                # Prepare detection data for all results
-                all_detection_data = []
-                for result in detection_results:
-                    fruit_class = result['fruit_class']
-                    is_defective = result['is_defective']
-                    confidence = result['confidence']
-                    bbox = result['bbox']
+                try:
+                    # Run detection pipeline
+                    detection_results, processed_frame = self.detection_pipeline.process_frame(frame)
                     
-                    # Prepare detection data
-                    detection_data = {
-                        'fruit_class': fruit_class,
-                        'is_defective': is_defective,
-                        'confidence': confidence,
-                        'timestamp': datetime.now().isoformat(),
-                        'bbox': bbox
-                    }
-                    all_detection_data.append(detection_data)
-                
-                # Always capture photo for logging purposes, regardless of debounce
-                # Pass all detection data to capture_photo method
-                image_path = self.capture_photo(frame, None, None, all_detection_data)
-                
-                # Process detection results
-                for i, result in enumerate(detection_results):
-                    fruit_class = result['fruit_class']
-                    is_defective = result['is_defective']
-                    confidence = result['confidence']
-                    bbox = result['bbox']
+                    # Copy frame for display to avoid modifying the original during processing
+                    display_frame = processed_frame.copy() if self.show_gui else None
                     
-                    # Get the corresponding detection data
-                    detection_data = all_detection_data[i]
-                    detection_data['image_path'] = image_path
+                    # Prepare detection data for all results
+                    all_detection_data = []
+                    for result in detection_results:
+                        fruit_class = result['fruit_class']
+                        is_defective = result['is_defective']
+                        confidence = result['confidence']
+                        bbox = result['bbox']
+                        
+                        # Prepare detection data
+                        detection_data = {
+                            'fruit_class': fruit_class,
+                            'is_defective': is_defective,
+                            'confidence': confidence,
+                            'timestamp': datetime.now().isoformat(),
+                            'bbox': bbox
+                        }
+                        all_detection_data.append(detection_data)
                     
-                    # Send to API if enabled
-                    if self.api_enabled:
-                        try:
-                            # Only send image to API if the fruit is defective
-                            api_image_path = image_path if is_defective else None
-                            self.api_handler.send_detection(detection_data, api_image_path)
-                            self.logger.info(f"Detection data sent to API: {detection_data}")
-                        except Exception as e:
-                            self.logger.error(f"Error sending detection to API: {e}")
+                    # Always capture photo for logging purposes, regardless of debounce
+                    # Pass all detection data to capture_photo method
+                    image_path = self.capture_photo(frame, None, None, all_detection_data)
                     
-                    # Send to Telegram if enabled
-                    if self.telegram_enabled:
-                        try:
-                            self._send_telegram_notification(detection_data, image_path)
-                        except Exception as e:
-                            self.logger.error(f"Error sending Telegram notification: {e}")
-                    
-                    self.logger.info(f"Processed detection: {fruit_class}, defective: {is_defective}, confidence: {confidence:.2f}")
+                    # Process detection results
+                    for i, result in enumerate(detection_results):
+                        fruit_class = result['fruit_class']
+                        is_defective = result['is_defective']
+                        confidence = result['confidence']
+                        bbox = result['bbox']
+                        
+                        # Get the corresponding detection data
+                        detection_data = all_detection_data[i]
+                        detection_data['image_path'] = image_path
+                        
+                        # Send to API if enabled
+                        if self.api_enabled:
+                            try:
+                                # Only send image to API if the fruit is defective
+                                api_image_path = image_path if is_defective else None
+                                self.api_handler.send_detection(detection_data, api_image_path)
+                                self.logger.info(f"Detection data sent to API: {detection_data}")
+                            except Exception as e:
+                                self.logger.error(f"Error sending detection to API: {e}")
+                        
+                        # Send to Telegram if enabled
+                        if self.telegram_enabled:
+                            try:
+                                self._send_telegram_notification(detection_data, image_path)
+                            except Exception as e:
+                                self.logger.error(f"Error sending Telegram notification: {e}")
+                        
+                        self.logger.info(f"Processed detection: {fruit_class}, defective: {is_defective}, confidence: {confidence:.2f}")
+                except Exception as e:
+                    self.logger.error(f"Error during detection processing: {e}")
+                    # Continue the loop even if there's an error in detection processing
+                    continue
                
                 # Log the detection for Telegram regardless of whether notifications were sent
                 # Only log if there were actual detections
@@ -324,7 +331,8 @@ class FruitDefectDetectionApp:
                         self.logger.info("Static image processed. Press Ctrl+C to exit the application")
                         while not self.exit_flag.is_set():
                             time.sleep(0.1)  # Small delay to prevent excessive CPU usage
-                    break  # Break from the main loop after GUI interaction
+                    # Instead of breaking, continue the main loop to allow for continuous operation
+                    continue # Continue the main loop instead of breaking
             
             self.logger.info("Application loop ended")
         

@@ -213,65 +213,70 @@ class MainLoop:
                 # Copy frame for display to avoid modifying the original during processing
                 display_frame = frame.copy() if self.show_gui else None
                 
-                # Run detection pipeline
-                detection_results = self.detection_pipeline.process_frame(frame)
-                
-                # Update detection count and notify status logger if state changed
-                new_detection_count = len(detection_results)
-                if new_detection_count > 0 and self.current_detection_count == 0:
-                    # Detection started (was 0, now > 0)
-                    self.detection_status_logger.detection_started()
-                    self.was_detecting = True
-                elif new_detection_count == 0 and self.current_detection_count > 0:
-                    # Detection ended (was > 0, now 0)
-                    self.detection_status_logger.detection_ended()
-                    self.was_detecting = False
-                
-                self.current_detection_count = new_detection_count
-                
-                # Process each detection result
-                for result in detection_results:
-                    fruit_class = result['fruit_class']
+                try:
+                    # Run detection pipeline
+                    detection_results = self.detection_pipeline.process_frame(frame)
                     
-                    # Prepare detection data
-                    detection_data = self._prepare_detection_data(result)
+                    # Update detection count and notify status logger if state changed
+                    new_detection_count = len(detection_results)
+                    if new_detection_count > 0 and self.current_detection_count == 0:
+                        # Detection started (was 0, now > 0)
+                        self.detection_status_logger.detection_started()
+                        self.was_detecting = True
+                    elif new_detection_count == 0 and self.current_detection_count > 0:
+                        # Detection ended (was > 0, now 0)
+                        self.detection_status_logger.detection_ended()
+                        self.was_detecting = False
                     
-                    # Always capture photo for logging purposes regardless of debounce
-                    image_path = self.capture_photo(frame, detection_data['fruit_class'],
-                                                  detection_data['is_defective'], detection_data)
-                    detection_data['image_path'] = image_path
+                    self.current_detection_count = new_detection_count
                     
-                    # Check debouncing for processing (API/Telegram notifications)
-                    if self.should_process_detection(fruit_class):
-                        # Send to API if enabled
-                        if self.api_enabled:
-                            try:
-                                # Only send image to API if the fruit is defective
-                                api_image_path = image_path if detection_data['is_defective'] else None
-                                self.api_handler.send_detection(detection_data, api_image_path)
-                                self.logger.info(f"Detection data sent to API: {detection_data}")
-                            except Exception as e:
-                                self.logger.error(f"Error sending detection to API: {e}")
+                    # Process each detection result
+                    for result in detection_results:
+                        fruit_class = result['fruit_class']
                         
-                        # Send to Telegram if bot is available and enabled
-                        if self.telegram_bot and self.telegram_enabled:
-                            try:
-                                # Log the detection with image path before sending notification
-                                self.telegram_bot.log_detection(detection_data)
-                                self._send_telegram_notification(detection_data, image_path)
-                            except Exception as e:
-                                self.logger.error(f"Error sending Telegram notification: {e}")
-                                
-                        self.logger.info(f"Processed detection: {fruit_class}, defective: {detection_data['is_defective']}, confidence: {detection_data['confidence']:.2f}")
-                    else:
-                        # Still log the detection but don't send notifications
-                        if self.telegram_bot and self.telegram_enabled:
-                            try:
-                                # Log the detection even if we don't send notifications
-                                self.telegram_bot.log_detection(detection_data)
-                                self.logger.info(f"Logged detection (debounced): {fruit_class}, defective: {detection_data['is_defective']}, confidence: {detection_data['confidence']:.2f}")
-                            except Exception as e:
-                                self.logger.error(f"Error logging detection: {e}")
+                        # Prepare detection data
+                        detection_data = self._prepare_detection_data(result)
+                        
+                        # Always capture photo for logging purposes regardless of debounce
+                        image_path = self.capture_photo(frame, detection_data['fruit_class'],
+                                                      detection_data['is_defective'], detection_data)
+                        detection_data['image_path'] = image_path
+                        
+                        # Check debouncing for processing (API/Telegram notifications)
+                        if self.should_process_detection(fruit_class):
+                            # Send to API if enabled
+                            if self.api_enabled:
+                                try:
+                                    # Only send image to API if the fruit is defective
+                                    api_image_path = image_path if detection_data['is_defective'] else None
+                                    self.api_handler.send_detection(detection_data, api_image_path)
+                                    self.logger.info(f"Detection data sent to API: {detection_data}")
+                                except Exception as e:
+                                    self.logger.error(f"Error sending detection to API: {e}")
+                            
+                            # Send to Telegram if bot is available and enabled
+                            if self.telegram_bot and self.telegram_enabled:
+                                try:
+                                    # Log the detection with image path before sending notification
+                                    self.telegram_bot.log_detection(detection_data)
+                                    self._send_telegram_notification(detection_data, image_path)
+                                except Exception as e:
+                                    self.logger.error(f"Error sending Telegram notification: {e}")
+                                    
+                            self.logger.info(f"Processed detection: {fruit_class}, defective: {detection_data['is_defective']}, confidence: {detection_data['confidence']:.2f}")
+                        else:
+                            # Still log the detection but don't send notifications
+                            if self.telegram_bot and self.telegram_enabled:
+                                try:
+                                    # Log the detection even if we don't send notifications
+                                    self.telegram_bot.log_detection(detection_data)
+                                    self.logger.info(f"Logged detection (debounced): {fruit_class}, defective: {detection_data['is_defective']}, confidence: {detection_data['confidence']:.2f}")
+                                except Exception as e:
+                                    self.logger.error(f"Error logging detection: {e}")
+                except Exception as e:
+                    self.logger.error(f"Error during detection processing: {e}")
+                    # Continue the loop even if there's an error in detection processing
+                    continue
                 
                 # Display frame if GUI is enabled
                 if self.show_gui and display_frame is not None:

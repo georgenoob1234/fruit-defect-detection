@@ -6,8 +6,6 @@ fruit_detection:
   confidence_threshold: 0.85  # Standard threshold for fruit detection
   target_classes:
     - apple
-    - banana
-    - tomato
 
 
 # Defect Classification/Segmentation Model Settings
@@ -16,5 +14,4 @@ defect_detection:
   model_path: "models/defect_segmentation/defect_segmenter.pt"
   confidence_threshold: 0.5  # Lower threshold to catch more potential defects
   target_classes:
-    - defective
     - defect

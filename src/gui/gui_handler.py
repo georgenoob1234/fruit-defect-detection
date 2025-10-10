@@ -76,13 +76,29 @@ class GUIHandler:
             # Draw segmentation masks if available and fruit is defective
             if is_defective and masks:
                 for mask in masks:
-                    # Draw the mask on the display frame (this is a simplified approach)
-                    # In a real implementation, we would properly overlay the segmentation mask
-                    mask_visual = np.zeros_like(display_frame)
-                    mask_visual[:, :, 0] = mask * 50  # Add red tint to defective areas
+                    # Resize the mask to match the bounding box dimensions
+                    bbox_width = bbox[2] - bbox[0]
+                    bbox_height = bbox[3] - bbox[1]
                     
-                    # Apply the mask as a transparent overlay
-                    display_frame = cv2.addWeighted(display_frame, 1.0, mask_visual, 0.3, 0)
+                    # Resize mask to match the bounding box dimensions
+                    resized_mask = cv2.resize(mask.astype(np.uint8), (bbox_width, bbox_height))
+                    
+                    # Create a mask visual with the same shape as the display frame
+                    mask_visual = np.zeros_like(display_frame)
+                    
+                    # Apply the resized mask to the specific region of the frame
+                    # Extract the region of interest from the display frame
+                    roi = display_frame[bbox[1]:bbox[3], bbox[0]:bbox[2]]
+                    
+                    # Create mask visual for the ROI with the same dimensions
+                    roi_mask_visual = np.zeros_like(roi)
+                    roi_mask_visual[:, :, 0] = resized_mask * 50  # Add red tint to defective areas
+                    
+                    # Apply the mask as a transparent overlay only to the ROI
+                    roi_with_mask = cv2.addWeighted(roi, 1.0, roi_mask_visual, 0.3, 0)
+                    
+                    # Put the modified ROI back into the display frame
+                    display_frame[bbox[1]:bbox[3], bbox[0]:bbox[2]] = roi_with_mask
             
             # Prepare label text based on toggle setting
             if self.show_defect_status:
