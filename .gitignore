@@ -19,3 +19,4 @@ Thumbs.db
 /tests/
 /captured_images/*
 /captured_images/
+/*.pt
