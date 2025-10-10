@@ -17,4 +17,5 @@ Thumbs.db
 /runs/
 /config/telegram_config.yaml
 /tests/
+/captured_images/*
 /captured_images/
