@@ -1,0 +1,6 @@
+# Telegram Bot Configuration for Fruit Defect Detection System
+
+# Telegram Bot Settings
+telegram:
+  bot_token: "YOUR_TELEGRAM_BOT_TOKEN_HERE"
+  enable_telegram: false  # Set to false to disable Telegram bot functionality
