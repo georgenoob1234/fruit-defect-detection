@@ -21,3 +21,4 @@ Thumbs.db
 /captured_images/
 /*.pt
 /logs/app.log
+/logs/

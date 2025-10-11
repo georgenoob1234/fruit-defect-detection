@@ -244,9 +244,13 @@ class FruitDefectDetectionApp:
                         }
                         all_detection_data.append(detection_data)
                     
-                    # Always capture photo for logging purposes, regardless of debounce
+                    # Only capture photo if there are detections
                     # Pass all detection data to capture_photo method
-                    image_path = self.capture_photo(frame, None, None, all_detection_data)
+                    if detection_results:
+                        image_path = self.capture_photo(frame, None, None, all_detection_data)
+                    else:
+                        image_path = None
+                        self.logger.info("No detections found, skipping photo capture")
                     
                     # Process detection results
                     for i, result in enumerate(detection_results):

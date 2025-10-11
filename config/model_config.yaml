@@ -3,7 +3,7 @@
 # Fruit Detection Model Settings
 fruit_detection:
   model_path: "models/fruit_detection/fruit_detector.pt"
-  confidence_threshold: 0.85  # Standard threshold for fruit detection
+  confidence_threshold: 0.5  # Standard threshold for fruit detection
   target_classes:
     - apple
 
