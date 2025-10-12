@@ -22,3 +22,6 @@ Thumbs.db
 /*.pt
 /logs/app.log
 /logs/
+/config/telegram_users.yaml
+/config/*
+/config
