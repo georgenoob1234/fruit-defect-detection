@@ -5,4 +5,3 @@ PyYAML
 numpy
 torch
 onnx
-streamlit

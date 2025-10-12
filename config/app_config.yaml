@@ -26,7 +26,7 @@ camera:
 
 # Static Image Settings
 static_image:
-  enabled: true
+  enabled: false
   image_path: "/home/george/PycharmProjects/fruit-defect-detection/data/defect_320/test/images/194016205_jpg.rf.93edafc2a2687806f1b19f5ad13144d8.jpg"
 
 # Photo Capture Settings

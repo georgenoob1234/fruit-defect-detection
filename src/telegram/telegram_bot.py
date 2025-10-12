@@ -116,12 +116,13 @@ class TelegramBot:
             self.logger.error(f"Error adding user {user_id}: {e}")
             return False
 
-    def get_user_by_username(self, username):
+    def get_user_by_username(self, username, timeout=30):
         """
         Get user information by username using Telegram's getChat API.
         
         Args:
             username (str): The username to look up (with or without @)
+            timeout (int): Timeout for the request in seconds (default 30)
             
         Returns:
             dict: User information if found, None otherwise
@@ -131,7 +132,7 @@ class TelegramBot:
             if username.startswith('@'):
                 username = username[1:]
             
-            response = requests.get(f"{self.base_url}/getChat", params={'chat_id': f'@{username}'})
+            response = requests.get(f"{self.base_url}/getChat", params={'chat_id': f'@{username}'}, timeout=timeout)
             if response.status_code == 200:
                 result = response.json()
                 if result.get('ok'):
@@ -142,22 +143,26 @@ class TelegramBot:
             else:
                 self.logger.error(f"Failed to get user by username: {response.text}")
                 return None
+        except requests.exceptions.Timeout:
+            self.logger.error(f"Timeout occurred while getting user by username: {username}")
+            return None
         except Exception as e:
             self.logger.error(f"Error getting user by username: {e}")
             return None
 
-    def add_user_by_username(self, username):
+    def add_user_by_username(self, username, timeout=30):
         """
         Add a user by username.
         
         Args:
             username (str): The username to add (with or without @)
+            timeout (int): Timeout for the request in seconds (default 30)
             
         Returns:
             bool: True if user was added successfully, False otherwise
         """
         try:
-            user_info = self.get_user_by_username(username)
+            user_info = self.get_user_by_username(username, timeout=timeout)
             if user_info:
                 user_id = user_info.get('id')
                 if user_id:
@@ -211,7 +216,7 @@ class TelegramBot:
             self.logger.error(f"Error getting detection logs: {e}")
             return []
 
-    def send_message(self, chat_id, message, image_path=None):
+    def send_message(self, chat_id, message, image_path=None, timeout=30):
         """
         Send a message to a Telegram chat, optionally with an image.
         
@@ -219,6 +224,7 @@ class TelegramBot:
             chat_id (int): The chat ID to send the message to
             message (str): The message text to send
             image_path (str, optional): Path to an image file to send with the message
+            timeout (int): Timeout for the request in seconds (default 30)
             
         Returns:
             bool: True if the message was sent successfully, False otherwise
@@ -236,7 +242,8 @@ class TelegramBot:
                     response = requests.post(
                         f"{self.base_url}/sendPhoto",
                         files=files,
-                        data=data
+                        data=data,
+                        timeout=timeout
                     )
             else:
                 # Send text-only message
@@ -247,9 +254,10 @@ class TelegramBot:
                 
                 response = requests.post(
                     f"{self.base_url}/sendMessage",
-                    data=data
+                    data=data,
+                    timeout=timeout
                 )
-            
+        
             if response.status_code == 200:
                 self.logger.info(f"Message sent successfully to chat {chat_id}")
                 return True
@@ -260,18 +268,53 @@ class TelegramBot:
         except FileNotFoundError:
             self.logger.error(f"Image file not found: {image_path}")
             # Send text-only message instead
-            return self._send_text_message(chat_id, message)
+            return self._send_text_message(chat_id, message, timeout=timeout)
+        except requests.exceptions.Timeout:
+            self.logger.error(f"Timeout occurred while sending message to chat {chat_id}")
+            return False
         except Exception as e:
             self.logger.error(f"Error sending message to chat {chat_id}: {e}")
             return False
 
-    def _send_text_message(self, chat_id, message):
+    def send_message_async(self, chat_id, message, image_path=None, timeout=30, callback=None):
+        """
+        Send a message asynchronously in a separate thread to avoid blocking.
+        
+        Args:
+            chat_id (int): The chat ID to send the message to
+            message (str): The message text to send
+            image_path (str, optional): Path to an image file to send with the message
+            timeout (int): Timeout for the request in seconds (default 30)
+            callback (callable, optional): Function to call with the result (success, result)
+            
+        Returns:
+            threading.Thread: The thread object running the send operation
+        """
+        import threading
+        
+        def send_task():
+            try:
+                result = self.send_message(chat_id, message, image_path, timeout=timeout)
+                if callback:
+                    callback(result, chat_id)
+            except Exception as e:
+                self.logger.error(f"Error in async send task for chat {chat_id}: {e}")
+                if callback:
+                    callback(False, chat_id)
+        
+        # Create and start the thread
+        thread = threading.Thread(target=send_task, daemon=True)
+        thread.start()
+        return thread
+
+    def _send_text_message(self, chat_id, message, timeout=30):
         """
         Send a text-only message to a Telegram chat.
         
         Args:
             chat_id (int): The chat ID to send the message to
             message (str): The message text to send
+            timeout (int): Timeout for the request in seconds (default 30)
             
         Returns:
             bool: True if the message was sent successfully, False otherwise
@@ -284,7 +327,8 @@ class TelegramBot:
             
             response = requests.post(
                 f"{self.base_url}/sendMessage",
-                data=data
+                data=data,
+                timeout=timeout
             )
             
             if response.status_code == 200:
@@ -294,11 +338,14 @@ class TelegramBot:
                 self.logger.error(f"Failed to send text message to chat {chat_id}: {response.text}")
                 return False
                 
+        except requests.exceptions.Timeout:
+            self.logger.error(f"Timeout occurred while sending text message to chat {chat_id}")
+            return False
         except Exception as e:
             self.logger.error(f"Error sending text message to chat {chat_id}: {e}")
             return False
 
-    def get_me(self):
+    def get_me(self, timeout=30):
         """
         Get information about the bot.
         
@@ -306,17 +353,20 @@ class TelegramBot:
             dict: Bot information if successful, None otherwise
         """
         try:
-            response = requests.get(f"{self.base_url}/getMe")
+            response = requests.get(f"{self.base_url}/getMe", timeout=timeout)
             if response.status_code == 200:
                 return response.json()
             else:
                 self.logger.error(f"Failed to get bot info: {response.text}")
                 return None
+        except requests.exceptions.Timeout:
+            self.logger.error(f"Timeout occurred while getting bot info")
+            return None
         except Exception as e:
             self.logger.error(f"Error getting bot info: {e}")
             return None
 
-    def get_updates(self):
+    def get_updates(self, timeout=30):
         """
         Get updates for the bot (not used in this implementation).
         
@@ -324,12 +374,15 @@ class TelegramBot:
             dict: Updates if successful, None otherwise
         """
         try:
-            response = requests.get(f"{self.base_url}/getUpdates")
+            response = requests.get(f"{self.base_url}/getUpdates", timeout=timeout)
             if response.status_code == 200:
                 return response.json()
             else:
                 self.logger.error(f"Failed to get updates: {response.text}")
                 return None
+        except requests.exceptions.Timeout:
+            self.logger.error(f"Timeout occurred while getting updates")
+            return None
         except Exception as e:
             self.logger.error(f"Error getting updates: {e}")
             return None
@@ -446,7 +499,7 @@ class TelegramBot:
         if target.startswith('@') or target.lstrip('-').isdigit():
             if target.startswith('@'):
                 # Add user by username
-                success = self.add_user_by_username(target)
+                success = self.add_user_by_username(target, timeout=30)
                 if success:
                     return f"✅ Successfully added user {target} to authorized list."
                 else:
@@ -524,7 +577,7 @@ class TelegramBot:
                 'timeout': 20  # 20 second timeout for long polling
             }
             
-            response = requests.get(f"{self.base_url}/getUpdates", params=params)
+            response = requests.get(f"{self.base_url}/getUpdates", params=params, timeout=30)
             
             if response.status_code == 200:
                 result = response.json()
@@ -576,11 +629,11 @@ class TelegramBot:
                     response = self.handle_command(user_id, command, args)
                     
                     # Send response back to the user
-                    self.send_message(chat_id, response)
+                    self.send_message(chat_id, response, timeout=30)
                 else:
                     # Not a command, send a helpful message
                     help_message = "ℹ️ I only respond to commands. Use /help to see available commands."
-                    self.send_message(chat_id, help_message)
+                    self.send_message(chat_id, help_message, timeout=30)
             else:
                 # Update doesn't contain a message, might be other types of updates
                 self.logger.debug(f"Received non-message update: {update}")

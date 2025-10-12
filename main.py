@@ -124,12 +124,70 @@ class FruitDefectDetectionApp:
         # Create save directory if it doesn't exist
         Path(self.image_save_path).mkdir(parents=True, exist_ok=True)
         
+        # Deduplication tracking - tracks the last sent detection for each fruit class
+        self.last_sent_detection = {}  # key: fruit_class, value: dict with is_defective and other properties (excluding confidence)
+        
         # Exit flag for graceful shutdown
         self.exit_flag = threading.Event()
         
         # Register signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
+
+
+    def _is_duplicate_detection(self, detection_data):
+        """
+        Check if this detection is a duplicate that should be suppressed.
+        Only suppress notifications if it's the same fruit type with same defect status and properties
+        (excluding confidence values which naturally vary).
+        
+        Args:
+            detection_data (dict): Detection information to check
+            
+        Returns:
+            bool: True if this is a duplicate that should be suppressed, False otherwise
+        """
+        fruit_class = detection_data['fruit_class']
+        is_defective = detection_data['is_defective']
+        
+        # Create a key for comparison that excludes confidence (which naturally varies)
+        detection_key = (
+            detection_data['fruit_class'],
+            detection_data['is_defective']
+        )
+        
+        # Check if we have sent a notification for this fruit class before
+        if fruit_class in self.last_sent_detection:
+            # Compare with the last sent detection for this fruit class
+            last_detection = self.last_sent_detection[fruit_class]
+            
+            # Create a key for the last sent detection
+            last_detection_key = (
+                last_detection['fruit_class'],
+                last_detection['is_defective']
+            )
+            
+            # If keys match, this is a duplicate
+            if detection_key == last_detection_key:
+                return True
+        
+        # This is a new detection or different from the last one sent
+        return False
+
+
+    def _update_last_sent_detection(self, detection_data):
+        """
+        Update the tracking for the last sent detection of this fruit class.
+        
+        Args:
+            detection_data (dict): Detection information that was sent
+        """
+        fruit_class = detection_data['fruit_class']
+        # Store the detection properties that define uniqueness (fruit class and defect status)
+        self.last_sent_detection[fruit_class] = {
+            'fruit_class': detection_data['fruit_class'],
+            'is_defective': detection_data['is_defective']
+        }
 
     def _signal_handler(self, signum, frame):
         """Handle termination signals for graceful shutdown."""
@@ -353,28 +411,36 @@ class FruitDefectDetectionApp:
         try:
             from src.telegram.telegram_bot import TelegramBot
             
-            # Initialize the bot
-            bot = TelegramBot(self.telegram_token, users_config_path='config/telegram_users.yaml')
-            
-            # Log the detection for potential retrieval via /showlogs command
-            bot.log_detection(detection_data)
-            
-            # Prepare message
-            message = (
-                f"🍎 Fruit Detection Alert 🍎\n"
-                f"Fruit: {detection_data['fruit_class']}\n"
-                f"Defective: {'Yes' if detection_data['is_defective'] else 'No'}\n"
-                f"Confidence: {detection_data['confidence']:.2f}\n"
-                f"Time: {detection_data['timestamp']}"
-            )
-            
-            # Send message to all authorized users
-            for user_id in self.telegram_user_ids:
-                try:
-                    bot.send_message(user_id, message, image_path)
-                    self.logger.info(f"Telegram notification sent to user {user_id}")
-                except Exception as e:
-                    self.logger.error(f"Failed to send Telegram message to {user_id}: {e}")
+            # Check if this detection is a duplicate that should be suppressed
+            if not self._is_duplicate_detection(detection_data):
+                # Initialize the bot
+                bot = TelegramBot(self.telegram_token, users_config_path='config/telegram_users.yaml')
+                
+                # Log the detection for potential retrieval via /showlogs command
+                bot.log_detection(detection_data)
+                
+                # Prepare message
+                message = (
+                    f"🍎 Fruit Detection Alert 🍎\n"
+                    f"Fruit: {detection_data['fruit_class']}\n"
+                    f"Defective: {'Yes' if detection_data['is_defective'] else 'No'}\n"
+                    f"Confidence: {detection_data['confidence']:.2f}\n"
+                    f"Time: {detection_data['timestamp']}"
+                )
+                
+                # Send message to all authorized users asynchronously to avoid blocking
+                for user_id in self.telegram_user_ids:
+                    try:
+                        # Use async method to avoid blocking the main thread
+                        bot.send_message_async(user_id, message, image_path, timeout=30)
+                        self.logger.info(f"Started async Telegram notification to user {user_id}")
+                    except Exception as e:
+                        self.logger.error(f"Failed to start async Telegram message to {user_id}: {e}")
+                
+                # Update the tracking for the last sent detection
+                self._update_last_sent_detection(detection_data)
+            else:
+                self.logger.info(f"Suppressed duplicate notification for {detection_data['fruit_class']} (defective: {detection_data['is_defective']})")
         except ImportError:
             self.logger.warning("Telegram bot module not found, skipping notifications")
         except Exception as e:
