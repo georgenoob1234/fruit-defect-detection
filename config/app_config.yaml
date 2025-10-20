@@ -28,11 +28,3 @@ camera:
 static_image:
   enabled: false
   image_path: "/home/george/PycharmProjects/fruit-defect-detection/data/defect_320/test/images/194016205_jpg.rf.93edafc2a2687806f1b19f5ad13144d8.jpg"
-
-# Photo Capture Settings
-# Note: Photos are always captured locally for logging purposes.
-# Only defective fruit photos are sent to the API.
-photo_capture:
-  capture_defective_only: false  # This setting no longer controls local capture, only API sending
-  image_save_path: "captured_images/"
-  image_format: "jpg"

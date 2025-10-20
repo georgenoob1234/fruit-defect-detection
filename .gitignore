@@ -25,3 +25,4 @@ Thumbs.db
 /config/telegram_users.yaml
 /config/*
 /config
+/src/metrics
