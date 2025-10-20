@@ -95,10 +95,133 @@ telegram:
 ```
 
 **Note:** You must replace `YOUR_TELEGRAM_BOT_TOKEN_HERE` with your actual Telegram bot token.
+## `config/trainer_config.yaml`
+
+This file defines all training parameters for the fruit defect detection system using a comprehensive YAML-based configuration system.
+
+### Structure
+
+```yaml
+# General Trainer Settings
+trainer:
+  enable_metrics: true
+  enable_detailed_metrics: true
+  enable_hardware_monitoring: true
+  enable_ood_detection: true
+  enable_stress_testing: true
+  enable_calibration_metrics: true
+  
+  metrics_output_dir: "metrics"
+  models_output_dir: "models"
+  runs_output_dir: "runs"
+  
+  epochs: 100
+  img_size: 320
+  batch_size: 16
+  learning_rate: 0.01
+  save_period: 10
+
+# Fruit Detection Model Configuration
+fruit_detection:
+  enabled: true
+  model_path: "models/fruit_detection/fruit_detector.pt"
+  model_name: "yolov8n.pt"
+  dataset_path: "datasets/fruit_dataset.yaml"
+  train_path: "datasets/fruit_dataset/images/train"
+  val_path: "datasets/fruit_dataset/images/val"
+  test_path: "datasets/fruit_dataset/images/test"
+  
+  epochs: 100
+  img_size: 320
+  batch_size: 16
+  learning_rate: 0.01
+  save_dir: "runs/detect/fruit_detector"
+  
+  num_classes: 3
+  class_names: ["apple", "banana", "tomato"]
+  confidence_threshold: 0.5
+
+# Defect Classification Model Configuration
+defect_classification:
+  enabled: true
+  model_path: "models/defect_classification/defect_classifier.pt"
+  model_name: "yolov8n-cls.pt"
+  dataset_path: "datasets/defect_classification_dataset.yaml"
+  train_path: "datasets/defect_classification_dataset/images/train"
+  val_path: "datasets/defect_classification_dataset/images/val"
+  test_path: "datasets/defect_classification_dataset/images/test"
+  
+  epochs: 50
+  img_size: 224
+  batch_size: 32
+  learning_rate: 0.001
+  save_dir: "runs/classify/defect_classifier"
+ 
+  num_classes: 2
+  class_names: ["non_defective", "defective"]
+  confidence_threshold: 0.6
+
+# Defect Segmentation Model Configuration
+defect_segmentation:
+  enabled: true
+  model_path: "models/defect_segmentation/defect_segmenter.pt"
+  model_name: "yolov8n-seg.pt"
+  dataset_path: "datasets/defect_segmentation_dataset.yaml"
+  train_path: "datasets/defect_segmentation_dataset/images/train"
+  val_path: "datasets/defect_segmentation_dataset/images/val"
+  test_path: "datasets/defect_segmentation_dataset/images/test"
+  
+  epochs: 150
+  img_size: 640
+  batch_size: 8
+  learning_rate: 0.001
+  save_dir: "runs/segment/defect_segmenter"
+  
+  num_classes: 1
+  class_names: ["defect"]
+  confidence_threshold: 0.6
+
+# Hardware and Performance Settings
+hardware:
+  use_gpu: true
+  gpu_device: 0
+  max_memory_usage_mb: 8192
+  enable_memory_monitoring: true
+  num_workers: 4
+  pin_memory: true
+
+# Metrics and Evaluation Settings
+metrics:
+  calculate_inference_time: true
+  calculate_percentiles: [50, 99]
+  calculate_precision_recall_f1: true
+  calculate_per_class_metrics: true
+  monitor_cpu_usage: true
+  monitor_memory_usage: true
+  monitor_gpu_usage: true
+  calculate_model_size: true
+  calculate_loading_time: true
+  calculate_ood_metrics: true
+  calculate_performance_distribution: true
+  enable_stress_testing: true
+  stress_test_conditions: ["glare", "shadows", "blur", "low_light"]
+  calculate_calibration_metrics: true
+
+# Logging and Output Settings
+logging:
+  level: "INFO"
+  file_path: "logs/trainer.log"
+  save_metrics_to_json: true
+  save_metrics_to_csv: true
+  timestamp_format: "%Y%m%d_%H%M%S"
+```
+
+**Note:** This configuration file centralizes all training parameters, eliminating the need for command-line arguments. All models can be trained with a single command: `python src/train_model.py`
 
 ## `config/telegram_users.yaml`
 
 This file defines a list of authorized user IDs who can receive notifications.
+
 
 ### Structure
 

@@ -5,3 +5,5 @@ PyYAML
 numpy
 torch
 onnx
+psutil
+gputil

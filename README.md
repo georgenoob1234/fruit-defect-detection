@@ -42,6 +42,9 @@ The Fruit Defect Detection System is a comprehensive solution that combines comp
 - Static image processing mode
 - Detection logging system
 - Multi-model architecture for accuracy
+- Comprehensive metrics evaluation including inference time, throughput, precision, recall, F1-score, accuracy, hardware usage, model size, OOD detection metrics, and performance distribution reports
+- Metrics saved in timestamped JSON/CSV format in /metrics folder
+- KPI validation and stress testing for challenging conditions
 
 ## System Requirements
 
@@ -259,28 +262,46 @@ The GUI can be enabled/disabled through the configuration file.
 
 ## Training Models
 
-To train custom models for your specific use case, use the training script:
+To train custom models for your specific use case, use the training script with the new YAML-based configuration system:
 
-### Training Fruit Detection Model
+### Basic Training
 ```bash
-python src/train_model.py --model_type fruit_detection --data_path /path/to/dataset.yaml --epochs 100
+python src/train_model.py
 ```
 
-### Training Defect Segmentation Model
+The script will automatically load the configuration from `config/trainer_config.yaml` and train all enabled models according to the specified parameters.
+
+### Training Specific Model Types
 ```bash
-python src/train_model.py --model_type defect_segmentation --data_path /path/to/dataset.yaml --epochs 100
+python src/train_model.py --model_type fruit_detection
 ```
 
-### Training with Custom Parameters
-```bash
-python src/train_model.py \
-    --model_type fruit_detection \
-    --data_path datasets/fruit_dataset.yaml \
-    --epochs 200 \
-    --img_size 384 \
-    --batch_size 8 \
-    --learning_rate 0.005
-```
+Available model types:
+- `fruit_detection`: Trains the fruit detection model
+- `defect_classification`: Trains the defect classification model
+- `defect_segmentation`: Trains the defect segmentation model
+
+### Configuration
+All training parameters are now defined in `config/trainer_config.yaml`. This includes:
+- Model-specific configurations for fruit detection, defect classification, and defect segmentation
+- Automatic derivation of train, validation, and test paths from dataset YAML file location
+- Hardware and performance settings
+- Metrics and evaluation settings with master metrics toggle
+- Logging and output settings
+
+### Metrics Evaluation
+After training, the system automatically performs comprehensive metrics evaluation including:
+- Inference time metrics (p50/p90/p99 percentiles)
+- Throughput in frames per second (FPS)
+- Precision, recall, F1-score, and accuracy for overall and per-class metrics
+- Hardware metrics (GPU/CPU usage and memory consumption)
+- Model size and loading time
+- OOD (Out-of-Distribution) detection metrics
+- Performance distribution reports
+- Calibration metrics and stress testing
+- KPI validation against targets (recall ≥0.80, precision ≥0.85)
+
+Metrics are saved to timestamped JSON and CSV files in the `/metrics` folder. The JSON format preserves the hierarchical structure of metrics, while the CSV format provides a flattened view with dot notation (e.g., "classification_metrics.overall.precision").
 
 For detailed training instructions, see the [Training Documentation](docs/TRAINER.md).
 

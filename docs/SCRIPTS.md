@@ -63,9 +63,24 @@ Key Features:
 
 ### `src/utils/logging_utils.py`
 Provides logging setup and configuration utilities.
-
 ### `src/utils/image_utils.py`
 Contains image processing utilities used across the application.
 
+### `src/utils/metrics_calculator.py`
+Implements comprehensive metrics evaluation functionality for trained models. This module calculates and saves detailed model evaluation metrics including inference time, throughput, precision, recall, F1-score, accuracy, hardware usage, model size, OOD detection metrics, and performance distribution reports. Metrics are saved to timestamped JSON/CSV files in the /metrics folder.
+
+### `src/train_model.py`
+The main entry point for training models in the fruit defect detection system. This script now uses a comprehensive YAML-based configuration system instead of command-line arguments. The script handles training of the fruit detection model, defect classification model, and defect segmentation model with separate workflows for each model type. After each training session, the script automatically performs comprehensive metrics evaluation including inference time, throughput, precision, recall, F1-score, accuracy, hardware usage, model size, OOD detection metrics, and performance distribution reports. Metrics are saved to timestamped JSON/CSV files in the /metrics folder.
+
+**Key Features:**
+- YAML-based configuration system with centralized settings in `config/trainer_config.yaml`
+- Independent training workflows for fruit detection (bounding boxes), defect classification (binary classification), and defect segmentation (segmentation masks)
+- Automatic download of pre-trained models (yolov8n.pt, yolov8n-seg.pt, yolov8n-cls.pt) when needed
+- Configurable training parameters (epochs, image size, batch size, learning rate) defined in the configuration file
+- Automatic model saving in appropriate models subdirectories
+- Comprehensive metrics evaluation after each training session
+- Support for custom dataset formats with appropriate handling for detection (bounding boxes) and segmentation (masks)
+
 ### `src/config_loader.py`
 Handles loading and parsing of YAML configuration files.
+
