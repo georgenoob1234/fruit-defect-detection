@@ -6,6 +6,8 @@ fruit_detection:
   confidence_threshold: 0.5  # Standard threshold for fruit detection
   target_classes:
     - apple
+    - tomato
+    - banana
 
 
 # Defect Classification/Segmentation Model Settings

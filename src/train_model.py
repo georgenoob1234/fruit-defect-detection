@@ -11,6 +11,7 @@ supports separate training workflows for each model type with appropriate
 dataset format handling for both detection (bounding boxes) and segmentation (masks).
 """
 import os
+import time
 from ultralytics import YOLO
 import yaml
 import sys
@@ -72,12 +73,13 @@ def download_pretrained_model(model_name, model_dir):
 
 
 def train_fruit_detection_model(data_path, epochs=100, img_size=640, batch_size=16,
-                               learning_rate=0.01, save_dir='runs/detect/fruit_detector'):
+                               learning_rate=0.01, save_period=10, save_dir='runs/detect/fruit_detector'):
     """
     Train the fruit detection model using detection format (bounding boxes).
     
     This model is responsible for detecting fruit types (apple, banana, tomato)
-    with bounding boxes in the input images.
+    with bounding boxes in the input images. Training time is measured and
+    included in the metrics if enabled in the configuration.
     
     Args:
         data_path (str): Path to the dataset YAML file with bounding box annotations in YOLO format
@@ -95,6 +97,9 @@ def train_fruit_detection_model(data_path, epochs=100, img_size=640, batch_size=
     # Ultralytics will automatically download yolov8n.pt if not present
     model = YOLO('yolov8n.pt')  # Using pre-trained detection model as starting point
     
+    # Record start time for training duration
+    start_time = time.time()
+    
     # Train the model using detection format (bounding boxes)
     results = model.train(
         data=data_path,
@@ -102,15 +107,20 @@ def train_fruit_detection_model(data_path, epochs=100, img_size=640, batch_size=
         imgsz=img_size,
         batch=batch_size,
         lr0=learning_rate,
+        save_period=save_period,
         save_dir=save_dir,
         name='fruit_detector'
     )
+    
+    # Calculate training time
+    training_duration = time.time() - start_time
     
     # Save the final trained model to the models directory
     model_dir = ensure_model_directory('fruit_detection')
     final_model_path = os.path.join(model_dir, 'fruit_detector.pt')
     model.save(final_model_path)
     print(f"Trained fruit detection model saved to {final_model_path}")
+    print(f"Training completed in {training_duration:.2f} seconds")
     print("Fruit detection model training completed!")
     
     # Calculate comprehensive metrics if metrics calculator is available and enabled
@@ -149,6 +159,10 @@ def train_fruit_detection_model(data_path, epochs=100, img_size=640, batch_size=
         calibration_images_path = os.path.join(dataset_dir, 'calibration_images') if os.path.exists(os.path.join(dataset_dir, 'calibration_images')) else None
         stress_test_images_path = os.path.join(dataset_dir, 'stress_test_images') if os.path.exists(os.path.join(dataset_dir, 'stress_test_images')) else None
         
+        # Check if training time calculation is enabled in the configuration
+        calculate_training_time = config.get('metrics', {}).get('calculate_training_time', True)
+        training_time_param = training_duration if calculate_training_time else None
+        
         metrics = calculate_comprehensive_metrics(
             model_path=final_model_path,
             data_path=data_path,
@@ -156,7 +170,8 @@ def train_fruit_detection_model(data_path, epochs=100, img_size=640, batch_size=
             ood_images_path=ood_images_path,
             calibration_images_path=calibration_images_path,
             stress_test_images_path=stress_test_images_path,
-            model_config_path="config/model_config.yaml"  # Pass model config for class validation
+            model_config_path="config/model_config.yaml",  # Pass model config for class validation
+            training_time=training_time_param  # Pass the training time if enabled in config
         )
         print("Metrics calculation completed!")
 
@@ -164,11 +179,12 @@ def train_fruit_detection_model(data_path, epochs=100, img_size=640, batch_size=
 
 
 def train_defect_classification_model(data_path, epochs=50, img_size=224, batch_size=32,
-                                    learning_rate=0.001, save_dir='runs/classify/defect_classifier'):
+                                    learning_rate=0.001, save_period=10, save_dir='runs/classify/defect_classifier'):
     """
     Train the defect classification model for binary classification (defective/non_defective).
     
     This model is responsible for determining whether detected fruits or regions contain defects.
+    Training time is measured and included in the metrics if enabled in the configuration.
     
     Args:
         data_path (str): Path to the dataset YAML file for defect classification
@@ -186,6 +202,9 @@ def train_defect_classification_model(data_path, epochs=50, img_size=224, batch_
     # Ultralytics will automatically download yolov8n-cls.pt if not present
     model = YOLO('yolov8n-cls.pt')  # Using pre-trained classification model as starting point
     
+    # Record start time for training duration
+    start_time = time.time()
+    
     # Train the model
     results = model.train(
         data=data_path,
@@ -193,15 +212,20 @@ def train_defect_classification_model(data_path, epochs=50, img_size=224, batch_
         imgsz=img_size,
         batch=batch_size,
         lr0=learning_rate,
+        save_period=save_period,
         save_dir=save_dir,
         name='defect_classifier'
     )
+    
+    # Calculate training time
+    training_duration = time.time() - start_time
     
     # Save the final trained model to the models directory
     model_dir = ensure_model_directory('defect_classification')
     final_model_path = os.path.join(model_dir, 'defect_classifier.pt')
     model.save(final_model_path)
     print(f"Trained defect classification model saved to {final_model_path}")
+    print(f"Training completed in {training_duration:.2f} seconds")
     print("Defect classification model training completed!")
     
     # Calculate comprehensive metrics if metrics calculator is available and enabled
@@ -240,6 +264,10 @@ def train_defect_classification_model(data_path, epochs=50, img_size=224, batch_
         calibration_images_path = os.path.join(dataset_dir, 'calibration_images') if os.path.exists(os.path.join(dataset_dir, 'calibration_images')) else None
         stress_test_images_path = os.path.join(dataset_dir, 'stress_test_images') if os.path.exists(os.path.join(dataset_dir, 'stress_test_images')) else None
         
+        # Check if training time calculation is enabled in the configuration
+        calculate_training_time = config.get('metrics', {}).get('calculate_training_time', True)
+        training_time_param = training_duration if calculate_training_time else None
+        
         metrics = calculate_comprehensive_metrics(
             model_path=final_model_path,
             data_path=data_path,
@@ -247,7 +275,8 @@ def train_defect_classification_model(data_path, epochs=50, img_size=224, batch_
             ood_images_path=ood_images_path,
             calibration_images_path=calibration_images_path,
             stress_test_images_path=stress_test_images_path,
-            model_config_path="config/model_config.yaml" # Pass model config for class validation
+            model_config_path="config/model_config.yaml", # Pass model config for class validation
+            training_time=training_time_param  # Pass the training time if enabled in config
         )
         print("Metrics calculation completed!")
 
@@ -255,12 +284,13 @@ def train_defect_classification_model(data_path, epochs=50, img_size=224, batch_
 
 
 def train_defect_segmentation_model(data_path, epochs=150, img_size=640, batch_size=8,
-                                   learning_rate=0.001, save_dir='runs/segment/defect_segmenter'):
+                                   learning_rate=0.001, save_period=10, save_dir='runs/segment/defect_segmenter'):
     """
     Train the defect segmentation model using YOLOv8 segmentation format.
     
     This model is responsible for creating precise segmentation masks for defects
     on detected fruits, providing pixel-level accuracy for defect regions.
+    Training time is measured and included in the metrics if enabled in the configuration.
     
     Args:
         data_path (str): Path to the dataset YAML file with segmentation mask annotations in YOLO format
@@ -278,6 +308,9 @@ def train_defect_segmentation_model(data_path, epochs=150, img_size=640, batch_s
     # Ultralytics will automatically download yolov8n-seg.pt if not present
     model = YOLO('yolov8n-seg.pt')  # Using pre-trained segmentation model as starting point
     
+    # Record start time for training duration
+    start_time = time.time()
+    
     # Train the model using segmentation format (masks)
     results = model.train(
         data=data_path,
@@ -285,16 +318,20 @@ def train_defect_segmentation_model(data_path, epochs=150, img_size=640, batch_s
         imgsz=img_size,
         batch=batch_size,
         lr0=learning_rate,
+        save_period=save_period,
         save_dir=save_dir,
         name='defect_segmenter'
     )
+    
+    # Calculate training time
+    training_duration = time.time() - start_time
     
     # Save the final trained model to the models directory
     model_dir = ensure_model_directory('defect_segmentation')
     final_model_path = os.path.join(model_dir, 'defect_segmenter.pt')
     model.save(final_model_path)
     print(f"Trained defect segmentation model saved to {final_model_path}")
-    
+    print(f"Training completed in {training_duration:.2f} seconds")
     print("Defect segmentation model training completed!")
     
     # Calculate comprehensive metrics if metrics calculator is available and enabled
@@ -333,6 +370,10 @@ def train_defect_segmentation_model(data_path, epochs=150, img_size=640, batch_s
         calibration_images_path = os.path.join(dataset_dir, 'calibration_images') if os.path.exists(os.path.join(dataset_dir, 'calibration_images')) else None
         stress_test_images_path = os.path.join(dataset_dir, 'stress_test_images') if os.path.exists(os.path.join(dataset_dir, 'stress_test_images')) else None
         
+        # Check if training time calculation is enabled in the configuration
+        calculate_training_time = config.get('metrics', {}).get('calculate_training_time', True)
+        training_time_param = training_duration if calculate_training_time else None
+        
         metrics = calculate_comprehensive_metrics(
             model_path=final_model_path,
             data_path=data_path,
@@ -340,7 +381,8 @@ def train_defect_segmentation_model(data_path, epochs=150, img_size=640, batch_s
             ood_images_path=ood_images_path,
             calibration_images_path=calibration_images_path,
             stress_test_images_path=stress_test_images_path,
-            model_config_path="config/model_config.yaml" # Pass model config for class validation
+            model_config_path="config/model_config.yaml", # Pass model config for class validation
+            training_time=training_time_param  # Pass the training time if enabled in config
         )
         print("Metrics calculation completed!")
 
@@ -456,6 +498,7 @@ def train_all_models(config_path="config/trainer_config.yaml"):
             img_size=config['fruit_detection']['img_size'],
             batch_size=config['fruit_detection']['batch_size'],
             learning_rate=config['fruit_detection']['learning_rate'],
+            save_period=config['fruit_detection']['save_period'],
             save_dir=config['fruit_detection']['save_dir']
         )
         print("Fruit detection model training completed!")
@@ -468,6 +511,7 @@ def train_all_models(config_path="config/trainer_config.yaml"):
             img_size=config['defect_classification']['img_size'],
             batch_size=config['defect_classification']['batch_size'],
             learning_rate=config['defect_classification']['learning_rate'],
+            save_period=config['defect_classification']['save_period'],
             save_dir=config['defect_classification']['save_dir']
         )
         print("Defect classification model training completed!")
@@ -480,6 +524,7 @@ def train_all_models(config_path="config/trainer_config.yaml"):
             img_size=config['defect_segmentation']['img_size'],
             batch_size=config['defect_segmentation']['batch_size'],
             learning_rate=config['defect_segmentation']['learning_rate'],
+            save_period=config['defect_segmentation']['save_period'],
             save_dir=config['defect_segmentation']['save_dir']
         )
         print("Defect segmentation model training completed!")
@@ -506,6 +551,7 @@ def train_single_model(model_type, config_path="config/trainer_config.yaml"):
                 img_size=config['fruit_detection']['img_size'],
                 batch_size=config['fruit_detection']['batch_size'],
                 learning_rate=config['fruit_detection']['learning_rate'],
+                save_period=config['fruit_detection']['save_period'],
                 save_dir=config['fruit_detection']['save_dir']
             )
             print(f"Fruit detection model training completed! Model saved in {config['fruit_detection']['save_dir']}")
@@ -520,6 +566,7 @@ def train_single_model(model_type, config_path="config/trainer_config.yaml"):
                 img_size=config['defect_classification']['img_size'],
                 batch_size=config['defect_classification']['batch_size'],
                 learning_rate=config['defect_classification']['learning_rate'],
+                save_period=config['defect_classification']['save_period'],
                 save_dir=config['defect_classification']['save_dir']
             )
             print(f"Defect classification model training completed! Model saved in {config['defect_classification']['save_dir']}")
@@ -534,6 +581,7 @@ def train_single_model(model_type, config_path="config/trainer_config.yaml"):
                 img_size=config['defect_segmentation']['img_size'],
                 batch_size=config['defect_segmentation']['batch_size'],
                 learning_rate=config['defect_segmentation']['learning_rate'],
+                save_period=config['defect_segmentation']['save_period'],
                 save_dir=config['defect_segmentation']['save_dir']
             )
             print(f"Defect segmentation model training completed! Model saved in {config['defect_segmentation']['save_dir']}")

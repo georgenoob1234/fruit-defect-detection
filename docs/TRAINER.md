@@ -94,12 +94,23 @@ trainer:
   models_output_dir: "models"
   runs_output_dir: "runs"
   
-  epochs: 100
-  img_size: 320
-  batch_size: 16
-  learning_rate: 0.01
-  save_period: 10
-
+  # Validation settings
+  validation_split: 0.2  # 20% of training data used for validation
+  test_split: 0.1        # 10% of data used for testing
+  
+  # Performance targets
+  target_inference_time_ms: 200  # Target ≤20ms per frame
+  target_end_to_end_latency: 0.5 # Target ≤0.5s end-to-end latency
+  
+  # KPI targets
+  min_recall_problematic_cases: 0.80
+  min_precision_marked_items: 0.85
+  max_unnecessary_suggestions: 0.10
+  
+  # Minimum requirements for test set
+  min_test_images: 120
+  min_images_per_class: 40
+  min_problematic_examples: 30
 # Fruit Detection Model Configuration
 fruit_detection:
   enabled: true
@@ -113,7 +124,8 @@ fruit_detection:
   img_size: 320
   batch_size: 16
   learning_rate: 0.01
-  save_dir: "runs/detect/fruit_detector"
+  save_period: 10  # Save checkpoint every N epochs
+ save_dir: "runs/detect/fruit_detector"
   
   num_classes: 3
   class_names: ["apple", "banana", "tomato"]
@@ -132,7 +144,8 @@ defect_classification:
   img_size: 224
   batch_size: 32
   learning_rate: 0.001
-  save_dir: "runs/classify/defect_classifier"
+  save_period: 10  # Save checkpoint every N epochs
+ save_dir: "runs/classify/defect_classifier"
  
   num_classes: 2
   class_names: ["non_defective", "defective"]
@@ -151,7 +164,8 @@ defect_segmentation:
   img_size: 640
   batch_size: 8
   learning_rate: 0.001
-  save_dir: "runs/segment/defect_segmenter"
+  save_period: 10  # Save checkpoint every N epochs
+ save_dir: "runs/segment/defect_segmenter"
   
   num_classes: 1
   class_names: ["defect"]
@@ -259,7 +273,8 @@ fruit_detection:
   img_size: 384
   batch_size: 8
   learning_rate: 0.005  # Decreased from default 0.01
-  save_dir: "runs/detect/fruit_detector"
+  save_period: 10  # Save checkpoint every N epochs
+ save_dir: "runs/detect/fruit_detector"
   
   num_classes: 3
   class_names: ["apple", "banana", "tomato"]

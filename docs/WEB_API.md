@@ -30,7 +30,7 @@ When a detection occurs and API integration is enabled, the system sends the fol
   "is_defective": true,
   "confidence": 0.85,
   "timestamp": "2023-12-01T10:30:45.123456",
-  "bbox": [x1, y1, x2, y2]
+  "image_path": "/path/to/captured/image.jpg"
 }
 ```
 
@@ -40,7 +40,7 @@ When a detection occurs and API integration is enabled, the system sends the fol
 - `is_defective`: Boolean indicating if the fruit is defective
 - `confidence`: Confidence score of the detection (0.0-1.0)
 - `timestamp`: ISO format timestamp of the detection
-- `bbox`: Array of bounding box coordinates [x1, y1, x2, y2]
+- `image_path`: Path to the captured image file
 
 ## Image Upload
 

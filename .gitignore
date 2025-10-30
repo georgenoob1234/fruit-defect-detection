@@ -26,3 +26,5 @@ Thumbs.db
 /config/*
 /config/
 /metrics/
+/captured_photos/
+/.kilocode/

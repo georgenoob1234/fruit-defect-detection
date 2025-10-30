@@ -229,7 +229,7 @@ The system can send detection data to external web APIs. To enable API integrati
      "is_defective": true,
      "confidence": 0.85,
      "timestamp": "2023-12-01T10:30:45.123456",
-     "bbox": [x1, y1, x2, y2]
+     "image_path": "/path/to/captured/image.jpg"
    }
    ```
 

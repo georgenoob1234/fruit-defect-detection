@@ -21,6 +21,7 @@ from collections import defaultdict
 import statistics
 from ultralytics import YOLO
 import yaml
+from sklearn.metrics import precision_recall_fscore_support, accuracy_score
 
 
 class MetricsCalculator:
@@ -28,7 +29,7 @@ class MetricsCalculator:
     A comprehensive metrics calculator for model evaluation in fruit defect detection system.
     """
     
-    def __init__(self, model_path, data_path, output_dir="metrics"):
+    def __init__(self, model_path, data_path, output_dir="metrics", training_time=None):
         """
         Initialize the metrics calculator.
         
@@ -36,6 +37,7 @@ class MetricsCalculator:
             model_path (str): Path to the trained model
             data_path (str): Path to the dataset YAML file
             output_dir (str): Directory to save metrics (default: "metrics")
+            training_time (float, optional): Training time in seconds to include in metrics
         """
         self.model_path = model_path
         self.data_path = data_path
@@ -95,6 +97,12 @@ class MetricsCalculator:
                 "test": {}
             }
         }
+        
+        # Add training time to metrics if provided
+        if training_time is not None:
+            self.metrics["training_time_seconds"] = training_time
+        else:
+            self.metrics["training_time_seconds"] = 0  # Default value for backward compatibility
         
         # Load model and calculate model size and loading time
         self.model, loading_time = self._load_model_with_timing()
@@ -227,57 +235,456 @@ class MetricsCalculator:
             model_config_path (str): Path to model configuration file to validate classes
         """
         # Load model configuration to get actual classes
-        actual_classes = self._get_classes_from_model_config(model_config_path, task_type)
+        model_classes = self._get_classes_from_model_config(model_config_path, task_type)
         
-        # For this example, we'll implement based on detection task
-        # In a real implementation, this would involve comparing predictions to ground truth
+        # Load the dataset YAML file to get the actual paths and dataset classes
+        with open(self.data_path, 'r') as f:
+            dataset_config = yaml.safe_load(f)
         
-        # This is a simplified implementation - in practice you'd need to compare
-        # model predictions against ground truth annotations
+        # Get dataset class names from the dataset config
+        dataset_classes = dataset_config.get('names', [])
+        if not dataset_classes:
+            # Fallback to default classes if not found in dataset config
+            dataset_classes = ["apple", "banana", "tomato"] if task_type == "detection" else ["defective", "non_defective"]
+        
+        # Create class mapping to handle ID mismatches between model and dataset
+        class_mapping = self._create_class_mapping(dataset_classes, model_classes)
+        
+        # Get the test images and labels paths from the YAML config
+        base_path = os.path.dirname(self.data_path)
+        
+        # Handle relative paths in dataset YAML (like '../test/images' in fruits_320/data.yaml)
+        test_images_rel_path = dataset_config.get('test', 'test/images')
+        test_labels_rel_path = dataset_config.get('test', 'test/labels').replace('images', 'labels')  # Convert images path to labels path
+        
+        # Resolve the paths relative to the dataset YAML file location
+        test_images_path = os.path.join(base_path, test_images_rel_path)
+        test_labels_path = os.path.join(base_path, test_labels_rel_path)
+        
+        # If the path starts with '../' or './', resolve it properly
+        test_images_path = os.path.abspath(test_images_path)
+        test_labels_path = os.path.abspath(test_labels_path)
+        
+        # If the resolved path doesn't exist, try alternative paths
+        if not os.path.exists(test_images_path):
+            # Try alternative paths based on common structures
+            alt_paths = [
+                os.path.join(base_path, 'test', 'images'),
+                os.path.join(base_path, 'images', 'test'),
+                os.path.join(base_path, test_images_rel_path),  # Try with original relative path
+                test_data_path
+            ]
+            for alt_path in alt_paths:
+                if os.path.exists(alt_path):
+                    test_images_path = alt_path
+                    break
+        
+        if not os.path.exists(test_labels_path):
+            # Try alternative paths for labels
+            alt_paths = [
+                os.path.join(base_path, 'test', 'labels'),
+                os.path.join(base_path, 'labels', 'test'),
+                os.path.join(base_path, test_labels_rel_path),  # Try with original relative path
+                test_data_path.replace('images', 'labels') if 'images' in test_data_path else test_data_path
+            ]
+            for alt_path in alt_paths:
+                if os.path.exists(alt_path):
+                    test_labels_path = alt_path
+                    break
+        
+        # Calculate metrics based on actual predictions vs ground truth
         if task_type == "detection":
-            # Calculate metrics for fruit detection using actual classes from config
-            self.metrics["classification_metrics"]["overall"]["precision"] = 0.85
-            self.metrics["classification_metrics"]["overall"]["recall"] = 0.82
-            self.metrics["classification_metrics"]["overall"]["f1_score"] = 0.83
-            self.metrics["classification_metrics"]["overall"]["accuracy"] = 0.88
+            # Calculate metrics for fruit detection using model classes and class mapping
+            # Use the test_data_path parameter as fallback if test_images_path doesn't exist
+            if not os.path.exists(test_images_path) and os.path.exists(test_data_path):
+                test_images_path = test_data_path
+            precision, recall, f1_score, accuracy, per_class_metrics = self._compute_detection_metrics(
+                test_images_path, test_labels_path, model_classes, class_mapping, dataset_classes
+            )
             
-            # Per-class metrics for actual classes from config
-            for class_name in actual_classes:
-                # Calculate metrics for each actual class
-                self.metrics["classification_metrics"]["per_class"][class_name] = {
-                    "precision": 0.85 + (hash(class_name) % 10) / 100,  # Slightly varied precision per class
-                    "recall": 0.82 + (hash(class_name) % 10) / 100,     # Slightly varied recall per class
-                    "f1_score": 0.83 + (hash(class_name) % 10) / 100,   # Slightly varied F1 per class
-                    "accuracy": 0.88 + (hash(class_name) % 10) / 100    # Slightly varied accuracy per class
-                }
+            self.metrics["classification_metrics"]["overall"]["precision"] = precision
+            self.metrics["classification_metrics"]["overall"]["recall"] = recall
+            self.metrics["classification_metrics"]["overall"]["f1_score"] = f1_score
+            self.metrics["classification_metrics"]["overall"]["accuracy"] = accuracy
+            
+            # Per-class metrics for model classes
+            self.metrics["classification_metrics"]["per_class"] = per_class_metrics
         
         elif task_type == "classification":
             # Calculate metrics for defect classification (defective/non_defective)
-            self.metrics["classification_metrics"]["overall"]["precision"] = 0.8
-            self.metrics["classification_metrics"]["overall"]["recall"] = 0.85
-            self.metrics["classification_metrics"]["overall"]["f1_score"] = 0.86
-            self.metrics["classification_metrics"]["overall"]["accuracy"] = 0.91
+            precision, recall, f1_score, accuracy, per_class_metrics = self._compute_classification_metrics(
+                test_images_path, test_labels_path, model_classes
+            )
             
-            # Per-class metrics for actual classes from config
-            for class_name in actual_classes:
-                self.metrics["classification_metrics"]["per_class"][class_name] = {
-                    "precision": 0.87 + (hash(class_name) % 10) / 100,
-                    "recall": 0.84 + (hash(class_name) % 10) / 100,
-                    "f1_score": 0.85 + (hash(class_name) % 10) / 100,
-                    "accuracy": 0.90 + (hash(class_name) % 10) / 100
-                }
+            self.metrics["classification_metrics"]["overall"]["precision"] = precision
+            self.metrics["classification_metrics"]["overall"]["recall"] = recall
+            self.metrics["classification_metrics"]["overall"]["f1_score"] = f1_score
+            self.metrics["classification_metrics"]["overall"]["accuracy"] = accuracy
+            
+            # Per-class metrics for model classes
+            self.metrics["classification_metrics"]["per_class"] = per_class_metrics
+
+    def _compute_detection_metrics(self, images_path, labels_path, class_names, class_mapping=None, dataset_class_names=None):
+        """
+        Compute detection metrics by comparing model predictions to ground truth annotations.
+        Handles class ID mapping between dataset and model to account for different class orderings.
+        
+        Args:
+            images_path (str): Path to test images
+            labels_path (str): Path to ground truth labels
+            class_names (list): List of model class names
+            class_mapping (dict, optional): Mapping from dataset class ID to model class ID
+            dataset_class_names (list, optional): List of dataset class names
+            
+        Returns:
+            tuple: (precision, recall, f1_score, accuracy, per_class_metrics)
+        """
+        # Initialize counters for overall metrics
+        tp_total = 0  # True positives
+        fp_total = 0  # False positives
+        fn_total = 0  # False negatives
+        
+        # Initialize per-class counters using model class names
+        class_stats = {class_name: {"tp": 0, "fp": 0, "fn": 0, "total_gt": 0} for class_name in class_names}
+        
+        # Get all image files
+        image_files = [f for f in os.listdir(images_path) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+        
+        print(f"DEBUG: Processing {len(image_files)} images for detection metrics")
+        print(f"DEBUG: Model class names: {class_names}")
+        print(f"DEBUG: Dataset class names: {dataset_class_names}")
+        print(f"DEBUG: Class mapping: {class_mapping}")
+        
+        # Process each image - remove limit for full processing
+        for img_idx, img_file in enumerate(image_files):
+            # Get corresponding label file
+            img_name = os.path.splitext(img_file)[0]
+            label_file = img_name + '.txt'
+            label_path = os.path.join(labels_path, label_file)
+            
+            if not os.path.exists(label_path):
+                print(f"DEBUG: Label file {label_path} does not exist, skipping")
+                continue # Skip if no ground truth label exists
+            
+            # Load ground truth with dataset class names and apply mapping if provided
+            gt_boxes = self._load_ground_truth_labels(label_path, dataset_class_names)
+            
+            # Load image and run model prediction
+            img_path = os.path.join(images_path, img_file)
+            img = cv2.imread(img_path)
+            
+            # Run inference
+            results = self.model(img)
+            
+            # Extract predictions
+            pred_boxes = []
+            print(f"DEBUG: Raw results type: {type(results)}")
+            
+            # Handle case where results is a list (common with YOLO models)
+            if isinstance(results, list):
+                print(f"DEBUG: Results is a list with {len(results)} items")
+                # Take the first item if it's a list
+                if len(results) > 0:
+                    result_item = results[0]
+                else:
+                    result_item = None
+            else:
+                result_item = results
+            
+            # Now process the result item
+            if result_item is not None and hasattr(result_item, 'boxes') and result_item.boxes is not None:
+                print(f"DEBUG: Result item has boxes attribute, length: {len(result_item.boxes)}")
+                if len(result_item.boxes) > 0:
+                    boxes = result_item.boxes.xyxy.cpu().numpy()  # x1, y1, x2, y2
+                    confs = result_item.boxes.conf.cpu().numpy()
+                    cls_ids = result_item.boxes.cls.cpu().numpy()
+                    
+                    print(f"DEBUG: Raw predictions - boxes: {len(boxes)}, confs: {confs}, cls_ids: {cls_ids}")
+                    print(f"DEBUG: Model class names: {class_names}")
+                    
+                    # Apply confidence threshold - lowered from 0.5 to 0.25 to catch more predictions
+                    valid_indices = confs >= 0.25  # Lowered confidence threshold to capture more predictions
+                    boxes = boxes[valid_indices]
+                    cls_ids = cls_ids[valid_indices].astype(int)
+                    confs = confs[valid_indices]
+                    
+                    print(f"DEBUG: After confidence filter - boxes: {len(boxes)}, cls_ids: {cls_ids}")
+                    
+                    # Get image dimensions for coordinate conversion
+                    img_height, img_width = img.shape[0], img.shape[1]
+                    
+                    for i in range(len(boxes)):
+                       # Add debug info to see what classes are being predicted
+                       print(f"DEBUG: Processing prediction {i}, class_id: {cls_ids[i]}, confidence: {confs[i]}")
+                       if cls_ids[i] < len(class_names):
+                           pred_class_name = class_names[cls_ids[i]]
+                           # Convert pixel coordinates to normalized coordinates to match ground truth
+                           x1, y1, x2, y2 = boxes[i]
+                           center_x = ((x1 + x2) / 2) / img_width  # Normalize x
+                           center_y = ((y1 + y2) / 2) / img_height  # Normalize y
+                           width = (x2 - x1) / img_width  # Normalize width
+                           height = (y2 - y1) / img_height  # Normalize height
+                           
+                           pred_boxes.append({
+                               'class_id': cls_ids[i],
+                               'class_name': pred_class_name,
+                               'bbox': [center_x, center_y, width, height],  # normalized coordinates to match ground truth
+                               'confidence': confs[i]
+                           })
+                           print(f"DEBUG: Added prediction {i} - class: {pred_class_name}, confidence: {confs[i]:.3f}")
+                       else:
+                           # Handle case where model predicts a class ID not in our class_names list
+                           print(f"DEBUG: Model predicted class_id {cls_ids[i]} which is not in class_names {class_names}")
+                           # Use a default name or skip
+                           continue
+                else:
+                    print(f"DEBUG: No boxes in result item")
+            else:
+                print(f"DEBUG: Result item is None or does not have boxes attribute or boxes is None")
+                # Try to see what attributes result_item has
+                if result_item is not None:
+                    print(f"DEBUG: Result item attributes: {[attr for attr in dir(result_item) if not attr.startswith('_')]}")
+                else:
+                    print(f"DEBUG: Result item is None")
+            
+            print(f"DEBUG: Image {img_idx}: {len(gt_boxes)} GT boxes, {len(pred_boxes)} pred boxes")
+            
+            # Update class statistics with ground truth counts
+            for gt_box in gt_boxes:
+                class_name = gt_box['class_name']
+                if class_name in class_stats:
+                    class_stats[class_name]["total_gt"] += 1
+            
+            # Perform IoU-based matching between ground truth and predictions
+            matched_pred_indices = set()  # Track which predictions have been matched
+            
+            # For each ground truth box, find the best matching prediction
+            for gt_idx, gt_box in enumerate(gt_boxes):
+                best_iou = 0
+                best_match_idx = -1
+                best_pred_box = None
+                
+                # Find the best matching prediction for this ground truth box
+                for pred_idx, pred_box in enumerate(pred_boxes):
+                    if pred_idx in matched_pred_indices:
+                        continue # Skip already matched predictions
+                    
+                    # Check if classes match
+                    if gt_box['class_id'] != pred_box['class_id']:
+                        continue  # Skip if classes don't match
+                    
+                    # Calculate IoU between gt_box and pred_box
+                    iou = self._calculate_iou(gt_box['bbox'], pred_box['bbox'])
+                    
+                    if iou > best_iou and iou >= 0.5:  # Standard IoU threshold
+                        best_iou = iou
+                        best_match_idx = pred_idx
+                        best_pred_box = pred_box
+                
+                # Handle the match
+                class_name = gt_box['class_name']
+                if class_name in class_stats:
+                    if best_match_idx != -1:
+                        # Found a match (true positive)
+                        matched_pred_indices.add(best_match_idx)
+                        class_stats[class_name]["tp"] += 1
+                        tp_total += 1
+                        print(f"DEBUG: Matched GT {gt_idx} ({class_name}) with pred {best_match_idx} ({best_pred_box['class_name']}) IoU={best_iou:.2f}")
+                    else:
+                        # No match found for this ground truth (false negative)
+                        class_stats[class_name]["fn"] += 1
+                        fn_total += 1
+                        print(f"DEBUG: Unmatched GT {gt_idx} ({class_name})")
+            
+            # Handle unmatched predictions (false positives)
+            for pred_idx, pred_box in enumerate(pred_boxes):
+                if pred_idx not in matched_pred_indices:
+                    class_name = pred_box['class_name']
+                    if class_name in class_stats:
+                        class_stats[class_name]["fp"] += 1
+                        fp_total += 1
+                        print(f"DEBUG: Unmatched pred {pred_idx} ({class_name})")
+        
+        print(f"DEBUG: Class statistics:")
+        for class_name, stats in class_stats.items():
+            print(f"  {class_name}: TP={stats['tp']}, FP={stats['fp']}, FN={stats['fn']}, Total GT={stats['total_gt']}")
+        
+        # Calculate overall metrics
+        if (tp_total + fp_total) > 0:
+            precision = tp_total / (tp_total + fp_total)
+        else:
+            precision = 0.0
+            
+        if (tp_total + fn_total) > 0:
+            recall = tp_total / (tp_total + fn_total)
+        else:
+            recall = 0.0
+            
+        if (precision + recall) > 0:
+            f1_score = 2 * (precision * recall) / (precision + recall)
+        else:
+            f1_score = 0.0
+            
+        # For accuracy in object detection, we'll use a simple approximation
+        total_gt = sum(stats["total_gt"] for stats in class_stats.values())
+        if total_gt > 0:
+            accuracy = tp_total / total_gt
+        else:
+            accuracy = 0.0
+        
+        print(f"DEBUG: Overall metrics - P: {precision:.3f}, R: {recall:.3f}, F1: {f1_score:.3f}, Acc: {accuracy:.3f}")
+        
+        # Calculate per-class metrics
+        per_class_metrics = {}
+        for class_name in class_names:
+            stats = class_stats[class_name]
+            tp = stats["tp"]
+            fp = stats["fp"]
+            fn = stats["fn"]
+            total_gt = stats["total_gt"]
+            
+            # Calculate per-class metrics
+            if (tp + fp) > 0:
+                class_precision = tp / (tp + fp)
+            else:
+                class_precision = 0.0
+                
+            if (tp + fn) > 0:
+                class_recall = tp / (tp + fn)
+            else:
+                class_recall = 0.0
+                
+            if (class_precision + class_recall) > 0:
+                class_f1 = 2 * (class_precision * class_recall) / (class_precision + class_recall)
+            else:
+                class_f1 = 0.0
+                
+            if total_gt > 0:
+                class_accuracy = tp / total_gt
+            else:
+                class_accuracy = 0.0
+            
+            per_class_metrics[class_name] = {
+                "precision": float(class_precision),
+                "recall": float(class_recall),
+                "f1_score": float(class_f1),
+                "accuracy": float(class_accuracy)
+            }
+            
+            print(f"DEBUG: Class {class_name} metrics - P: {class_precision:.3f}, R: {class_recall:.3f}, F1: {class_f1:.3f}, Acc: {class_accuracy:.3f}")
+        
+        return float(precision), float(recall), float(f1_score), float(accuracy), per_class_metrics
+
+    def _load_ground_truth_labels(self, label_path, class_names, class_mapping=None):
+        """
+        Load ground truth labels from YOLO format text file.
+        Handles class ID mapping between dataset and model to account for different class orderings.
+        
+        Args:
+            label_path (str): Path to the label file
+            class_names (list): List of class names
+            class_mapping (dict, optional): Mapping from dataset class ID to model class ID
+            
+        Returns:
+            list: List of dictionaries with class_id, class_name, and bbox
+        """
+        boxes = []
+        try:
+            with open(label_path, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    
+                    # YOLO format: class_id center_x center_y width height (normalized)
+                    parts = line.split()
+                    if len(parts) >= 5:
+                        dataset_class_id = int(parts[0])
+                        if dataset_class_id < len(class_names):
+                            # Map dataset class ID to model class ID if mapping provided
+                            model_class_id = class_mapping.get(dataset_class_id, dataset_class_id) if class_mapping else dataset_class_id
+                            
+                            # Parse the bounding box values
+                            center_x, center_y, width, height = [float(x) for x in parts[1:5]]
+                            
+                            # Convert normalized coordinates to pixel coordinates
+                            # This is handled during IoU calculation
+                            boxes.append({
+                                'class_id': model_class_id,
+                                'class_name': class_names[model_class_id] if model_class_id < len(class_names) else class_names[dataset_class_id],
+                                'bbox': [center_x, center_y, width, height]  # normalized coordinates
+                            })
+        except Exception as e:
+            print(f"Error loading ground truth labels from {label_path}: {e}")
+        
+        return boxes
+
+    def _calculate_iou(self, box1, box2):
+        """
+        Calculate Intersection over Union between two bounding boxes.
+        This handles normalized coordinates (0-1 range) from YOLO format.
+        
+        Args:
+            box1, box2: Bounding boxes in format [center_x, center_y, width, height] (normalized)
+            
+        Returns:
+            float: IoU value between 0 and 1
+        """
+        # Convert from [center_x, center_y, width, height] to [x1, y1, x2, y2]
+        def convert_to_xyxy(bbox):
+            center_x, center_y, width, height = bbox
+            x1 = center_x - width / 2
+            y1 = center_y - height / 2
+            x2 = center_x + width / 2
+            y2 = center_y + height / 2
+            return x1, y1, x2, y2
+        
+        x1_1, y1_1, x2_1, y2_1 = convert_to_xyxy(box1)
+        x1_2, y1_2, x2_2, y2_2 = convert_to_xyxy(box2)
+        
+        # Calculate intersection
+        inter_x1 = max(x1_1, x1_2)
+        inter_y1 = max(y1_1, y1_2)
+        inter_x2 = min(x2_1, x2_2)
+        inter_y2 = min(y2_1, y2_2)
+        
+        # Calculate intersection area
+        inter_width = max(0, inter_x2 - inter_x1)
+        inter_height = max(0, inter_y2 - inter_y1)
+        inter_area = inter_width * inter_height
+        
+        # Calculate areas of both boxes
+        area_1 = (x2_1 - x1_1) * (y2_1 - y1_1)
+        area_2 = (x2_2 - x1_2) * (y2_2 - y1_2)
+        
+        # Calculate IoU
+        union_area = area_1 + area_2 - inter_area
+        iou = inter_area / union_area if union_area > 0 else 0
+        
+        return iou
 
     def _get_classes_from_model_config(self, model_config_path, task_type):
         """
-        Get actual classes from model configuration file.
+        Get actual classes from model configuration file or from the loaded model itself.
         
         Args:
             model_config_path (str): Path to model configuration file
             task_type (str): Type of task ("detection", "classification", or "segmentation")
         
         Returns:
-            list: List of actual class names from the configuration
+            list: List of actual class names from the configuration or model
         """
+        # First, try to get classes from the loaded model directly
+        try:
+            # YOLO model has a names attribute that contains the class names
+            if hasattr(self.model, 'names') and self.model.names is not None:
+                model_names = list(self.model.names.values()) if isinstance(self.model.names, dict) else self.model.names
+                print(f"DEBUG: Model class names: {model_names}")
+                return model_names
+        except Exception as e:
+            print(f"Could not get classes from model: {e}")
+        
+        # Fallback to loading from config file
         if os.path.exists(model_config_path):
             try:
                 with open(model_config_path, 'r') as f:
@@ -318,6 +725,38 @@ class MetricsCalculator:
                 return ["defective", "non_defective"]
         
         return []
+    
+    def _create_class_mapping(self, dataset_class_names, model_class_names):
+        """
+        Create mapping between dataset class names and model class names to handle ID mismatches.
+        
+        Args:
+            dataset_class_names (list): Class names from dataset configuration
+            model_class_names (list): Class names from model
+            
+        Returns:
+            dict: Mapping from dataset class ID to model class ID
+        """
+        # Create mapping from class names to IDs for both dataset and model
+        dataset_name_to_id = {name: idx for idx, name in enumerate(dataset_class_names)}
+        model_name_to_id = {name: idx for idx, name in enumerate(model_class_names)}
+        
+        # Create mapping from dataset class ID to model class ID
+        class_mapping = {}
+        for class_name in dataset_class_names:
+            if class_name in dataset_name_to_id and class_name in model_name_to_id:
+                dataset_id = dataset_name_to_id[class_name]
+                model_id = model_name_to_id[class_name]
+                class_mapping[dataset_id] = model_id
+            else:
+                # If class name doesn't exist in one of them, use identity mapping
+                if class_name in dataset_name_to_id:
+                    dataset_id = dataset_name_to_id[class_name]
+                    class_mapping[dataset_id] = dataset_id
+        
+        print(f"DEBUG: Class mapping (dataset_id -> model_id): {class_mapping}")
+        return class_mapping
+
     
     def calculate_ood_detection_metrics(self, ood_images_path):
         """
@@ -741,7 +1180,7 @@ class MetricsCalculator:
 def calculate_comprehensive_metrics(model_path, data_path, test_images_path,
                                   ood_images_path=None, calibration_images_path=None,
                                   stress_test_images_path=None, output_dir="metrics",
-                                  model_config_path="config/model_config.yaml"):
+                                  model_config_path="config/model_config.yaml", training_time=None):
 
     """
     Main function to calculate comprehensive metrics for a trained model.
@@ -754,12 +1193,13 @@ def calculate_comprehensive_metrics(model_path, data_path, test_images_path,
         calibration_images_path (str, optional): Path to calibration images
         stress_test_images_path (str, optional): Path to stress test images
         output_dir (str): Directory to save metrics (default: "metrics")
+        training_time (float, optional): Training time in seconds to include in metrics
     
     Returns:
         dict: Dictionary containing all calculated metrics
     """
     # Create metrics calculator instance
-    calculator = MetricsCalculator(model_path, data_path, output_dir)
+    calculator = MetricsCalculator(model_path, data_path, output_dir, training_time=training_time)
     
     # Calculate all metrics
     calculator.calculate_all_metrics(

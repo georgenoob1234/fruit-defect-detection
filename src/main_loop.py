@@ -232,20 +232,40 @@ class MainLoop:
 
     def _prepare_detection_data(self, detection_result):
         """
-        Prepare detection data with timestamp.
+        Prepare internal detection data with bbox for GUI and other components.
         
         Args:
             detection_result (dict): Raw detection result
             
         Returns:
-            dict: Formatted detection data
+            dict: Formatted internal detection data with bbox
         """
         return {
             'fruit_class': detection_result['fruit_class'],
             'is_defective': detection_result['is_defective'],
             'confidence': detection_result['confidence'],
             'timestamp': datetime.now().isoformat(),
-            'bbox': detection_result['bbox']
+            'bbox': detection_result['bbox'],  # Include bbox for internal use (GUI, etc.)
+            'image_path': detection_result.get('image_path')  # Initially None, will be set after photo capture
+        }
+        
+    def _prepare_api_detection_data(self, detection_result, image_path=None):
+        """
+        Prepare API-specific detection data without bbox, but with image_path.
+        
+        Args:
+            detection_result (dict): Raw detection result
+            image_path (str, optional): Path to captured image
+            
+        Returns:
+            dict: Formatted detection data for API (without bbox)
+        """
+        return {
+            'fruit_class': detection_result['fruit_class'],
+            'is_defective': detection_result['is_defective'],
+            'confidence': detection_result['confidence'],
+            'timestamp': datetime.now().isoformat(),
+            'image_path': image_path  # Include image_path for API
         }
 
     def run(self):
@@ -293,7 +313,7 @@ class MainLoop:
                     for result in detection_results:
                         fruit_class = result['fruit_class']
                         
-                        # Prepare detection data
+                        # Prepare internal detection data with bbox for GUI
                         detection_data = self._prepare_detection_data(result)
                         
                         # Always capture photo for logging purposes regardless of debounce
@@ -306,10 +326,13 @@ class MainLoop:
                             # Send to API if enabled
                             if self.api_enabled:
                                 try:
+                                    # Prepare API-specific detection data (without bbox, with image_path)
+                                    api_detection_data = self._prepare_api_detection_data(result, image_path)
+                                    
                                     # Only send image to API if the fruit is defective
                                     api_image_path = image_path if detection_data['is_defective'] else None
-                                    self.api_handler.send_detection(detection_data, api_image_path)
-                                    self.logger.info(f"Detection data sent to API: {detection_data}")
+                                    self.api_handler.send_detection(api_detection_data, api_image_path)
+                                    self.logger.info(f"Detection data sent to API: {api_detection_data}")
                                 except Exception as e:
                                     self.logger.error(f"Error sending detection to API: {e}")
                             

@@ -7,3 +7,4 @@ torch
 onnx
 psutil
 gputil
+scikit-learn

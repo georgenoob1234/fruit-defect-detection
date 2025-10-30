@@ -292,20 +292,43 @@ class FruitDefectDetectionApp:
                         confidence = result['confidence']
                         bbox = result['bbox']
                         
-                        # Prepare detection data
-                        detection_data = {
+                        # Prepare internal detection data (with bbox for GUI)
+                        internal_detection_data = {
                             'fruit_class': fruit_class,
                             'is_defective': is_defective,
                             'confidence': confidence,
                             'timestamp': datetime.now().isoformat(),
                             'bbox': bbox
                         }
-                        all_detection_data.append(detection_data)
+                        
+                        # Prepare API detection data (without bbox, with image_path)
+                        api_detection_data = {
+                            'fruit_class': fruit_class,
+                            'is_defective': is_defective,
+                            'confidence': confidence,
+                            'timestamp': datetime.now().isoformat(),
+                            'image_path': None  # Will be set after photo capture
+                        }
+                        
+                        all_detection_data.append(internal_detection_data)
+                        # Store API version separately or modify the same data after photo capture
+                        # For now, we'll modify the same data after photo capture
                     
-                    # Only capture photo if there are detections
+                    # Only capture photo if there are detections and settings allow it
                     # Pass all detection data to capture_photo method
                     if detection_results:
-                        image_path = self.capture_photo(frame, None, None, all_detection_data)
+                        # Check if we should only capture photos when defects are detected
+                        should_capture = True
+                        if self.capture_defective_only:
+                            # Only capture if at least one detection is defective
+                            should_capture = any(detection['is_defective'] for detection in all_detection_data)
+                        
+                        if should_capture:
+                            image_path = self.capture_photo(frame, None, None, all_detection_data)
+                            self.logger.info(f"Photo captured based on capture_defective_only setting: {self.capture_defective_only}")
+                        else:
+                            image_path = None
+                            self.logger.info("No defective detections found, skipping photo capture due to capture_defective_only setting")
                     else:
                         image_path = None
                         self.logger.info("No detections found, skipping photo capture")
@@ -321,17 +344,36 @@ class FruitDefectDetectionApp:
                         detection_data = all_detection_data[i]
                         detection_data['image_path'] = image_path
                         
+                        # Create API-specific detection data (without bbox, with image_path)
+                        api_detection_data = {
+                            'fruit_class': detection_data['fruit_class'],
+                            'is_defective': detection_data['is_defective'],
+                            'confidence': detection_data['confidence'],
+                            'timestamp': detection_data['timestamp'],
+                            'image_path': image_path
+                        }
+                        # Remove bbox from API data if it exists
+                        if 'bbox' in api_detection_data:
+                            del api_detection_data['bbox']
+                        
                         # Send to API if enabled
                         if self.api_enabled:
                             try:
                                 # Only send image to API if the fruit is defective
                                 api_image_path = image_path if is_defective else None
-                                self.api_handler.send_detection(detection_data, api_image_path)
-                                self.logger.info(f"Detection data sent to API: {detection_data}")
+                                self.api_handler.send_detection(api_detection_data, api_image_path)
+                                self.logger.info(f"Detection data sent to API: {api_detection_data}")
                             except Exception as e:
                                 self.logger.error(f"Error sending detection to API: {e}")
                         
-                        # Send to Telegram if enabled
+                        # Send to Telegram if enabled (using internal detection data with bbox)
+                        if self.telegram_enabled:
+                            try:
+                                self._send_telegram_notification(detection_data, image_path)
+                            except Exception as e:
+                                self.logger.error(f"Error sending Telegram notification: {e}")
+                        
+                        # Send to Telegram if enabled (internal detection data with bbox)
                         if self.telegram_enabled:
                             try:
                                 self._send_telegram_notification(detection_data, image_path)
