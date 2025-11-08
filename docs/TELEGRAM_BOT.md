@@ -27,7 +27,7 @@ The Telegram bot now supports several commands for interaction and monitoring:
 3. Follow the instructions to name your bot and get the API token
 4. Copy the bot token provided by BotFather
 
-### 2. Configure the Bot Token
+### 2. Configure the Bot Token and Cooldown Settings
 
 Update `config/telegram_config.yaml` with your bot token:
 
@@ -36,8 +36,14 @@ Update `config/telegram_config.yaml` with your bot token:
 
 # Telegram Bot Settings
 telegram:
-  bot_token: "YOUR_TELEGRAM_BOT_TOKEN_HERE"  # Replace with your actual bot token
-  enable_telegram: true  # Set to false to disable Telegram bot functionality
+ bot_token: "YOUR_TELEGRAM_BOT_TOKEN_HERE"  # Replace with your actual bot token
+ enable_telegram: true  # Set to false to disable Telegram bot functionality
+  cooldown:
+    enabled: true  # Enable or disable the cooldown system for duplicate notifications
+    duration: 30  # Cooldown duration in seconds (default: 30 seconds)
+    track_by:  # What to track for cooldown purposes
+      - fruit_class # Track by fruit type
+      - is_defective  # Track by defect status
 ```
 
 ### 3. Get User IDs
@@ -81,7 +87,7 @@ If the detected fruit is defective, an image of the fruit is also sent with the 
 
 ### 1. Detection Processing
 - When a fruit is detected and processed by the system
-- The debouncing mechanism checks if enough time has passed since the last notification for the same fruit class
+- The cooldown system checks if a similar detection was recently sent (same fruit type with same defect status)
 - If the fruit is defective and the image is captured, the image path is stored
 
 ### 2. Message Preparation
@@ -90,13 +96,19 @@ If the detected fruit is defective, an image of the fruit is also sent with the 
 
 ### 3. Notification Sending
 - The system iterates through all authorized user IDs in the configuration
-- For each user ID, it sends the message (with image if available) using the Telegram Bot API
+- For each user ID, it sends the message (with image if available) using the Telegram Bot API asynchronously to avoid blocking the main thread
 - Success or failure is logged for each notification attempt
 
 ### 4. Error Handling
 - If the image file is not found, the system sends the text message only
 - Network errors are caught and logged
 - Each user receives the notification independently, so one failure doesn't affect others
+
+### 5. Cooldown System
+- The system implements a configurable cooldown system to prevent repeated notifications for the same fruit class with the same defect status
+- Notifications are suppressed for a configurable time period after a similar detection is sent
+- The cooldown duration and tracking criteria can be configured in the `config/telegram_config.yaml` file
+- This allows for a configurable time-based delay before duplicate notifications can be sent again
 
 ## Configuration Options
 
@@ -105,6 +117,9 @@ The Telegram integration is configured in two files:
 ### `config/telegram_config.yaml`
 - `bot_token`: Your Telegram bot token from BotFather
 - `enable_telegram`: Boolean flag to enable or disable Telegram bot functionality (default: true)
+- `cooldown.enabled`: Enable or disable the cooldown system for duplicate notifications (default: true)
+- `cooldown.duration`: Time in seconds to wait before allowing duplicate notifications (default: 30 seconds)
+- `cooldown.track_by`: List of fields to use for identifying duplicate notifications (default: fruit_class, is_defective)
 
 ### `config/telegram_users.yaml`
 - `user_ids`: List of authorized user IDs who can receive notifications

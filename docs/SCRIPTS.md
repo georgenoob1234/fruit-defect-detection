@@ -17,6 +17,10 @@ The main entry point for the application. This script orchestrates all component
 - Handles graceful shutdown
 - Implements detection logging system for tracking detection history
 - Updated debouncing mechanism that applies only to notifications, not photo capture
+- Static image mode for processing single images instead of camera feed
+- Improved photo capture with full frame images containing bounding boxes
+- Asynchronous Telegram notifications to avoid blocking the main thread
+- Enhanced detection pipeline with multiple detection support
 
 ### `src/main_loop.py`
 Contains the `MainLoop` class which encapsulates the core processing loop logic. This module coordinates between the camera, detectors, API handler, and Telegram bot, providing a clean separation of concerns for the main application loop.

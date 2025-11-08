@@ -71,26 +71,28 @@ class FruitDetector:
         if class_name.lower() in ['apple', 'tomato']:
             # Acceptable aspect ratio range for round fruits (0.5 to 2.0)
             # Made more permissive to catch apples that might appear oval-shaped in images
-            if aspect_ratio < 0.2 or aspect_ratio > 5.0:
+            if aspect_ratio < 0.1 or aspect_ratio > 15.0:
                 return False
         
         # For bananas (elongated fruit), aspect ratio should be different
         elif class_name.lower() == 'banana':
-            # Bananas should have more elongated aspect ratio (typically 2:1 to 5:1)
-            if aspect_ratio < 1.5 or aspect_ratio > 6.0:
+            # Bananas can have various aspect ratios depending on orientation and variety
+            # Much more permissive range to account for different banana shapes and orientations
+            # Bananas can be very short and wide (aspect ratio near 0.1) or very long and thin (aspect ratio > 15)
+            if aspect_ratio < 0.1 or aspect_ratio > 15.0:
                 return False
         
         # Size validation: fruit should be neither too small nor too large
-        # Minimum size: at least 10x10 pixels (made more permissive)
-        if width < 10 or height < 10:
+        # Minimum size: at least 5x5 pixels (very permissive)
+        if width < 5 or height < 5:
             return False
         
-        # Maximum size: should not be more than 50% of the frame area (made more permissive)
-        if relative_size > 0.5:
+        # Maximum size: should not be more than 70% of the frame area (very permissive)
+        if relative_size > 0.7:
             return False
             
-        # Maximum dimension: should not exceed 60% of the frame in any direction (made more permissive)
-        if width > frame_width * 0.6 or height > frame_height * 0.6:
+        # Maximum dimension: should not exceed 80% of the frame in any direction (very permissive)
+        if width > frame_width * 0.8 or height > frame_height * 0.8:
             return False
         
         return True

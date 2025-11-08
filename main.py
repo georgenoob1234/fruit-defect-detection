@@ -35,6 +35,9 @@ from src.detection.defect_detector import DefectSegmenter
 from src.api.api_handler import APIHandler
 from src.detection.detection_pipeline import DetectionPipeline
 from src.gui.gui_handler import GUIHandler
+from src.utils.ood_detector import OODDetector
+
+from src.utils.background_image_monitor import BackgroundImageMonitor
 
 
 class FruitDefectDetectionApp:
@@ -75,13 +78,13 @@ class FruitDefectDetectionApp:
         )
         
         # Check if defect detection is enabled
-        self.defect_detection_enabled = self.model_config['defect_detection'].get('enabled', True)
+        self.defect_detection_enabled = self.model_config['defect_segmentation'].get('enabled', True)
         
         if self.defect_detection_enabled:
             self.defect_segmenter = DefectSegmenter(
-                model_path=self.model_config['defect_detection']['model_path'],
-                confidence_threshold=self.model_config['defect_detection']['confidence_threshold'],
-                target_classes=self.model_config['defect_detection']['target_classes']
+                model_path=self.model_config['defect_segmentation']['model_path'],
+                confidence_threshold=self.model_config['defect_segmentation']['confidence_threshold'],
+                target_classes=self.model_config['defect_segmentation']['target_classes']
             )
         else:
             self.defect_segmenter = None
@@ -93,12 +96,24 @@ class FruitDefectDetectionApp:
             timeout=self.app_config['api']['timeout']
         )
         
+        # Initialize OOD detector with configuration
+        ood_config = self.model_config.get('ood_detection', {
+            'enabled': True,
+            'ood_threshold': 0.3,
+            'confidence_threshold': 0.5,
+            'max_class_variance': 0.7,
+            'min_detection_ratio': 0.1,
+            'known_classes': self.model_config['fruit_detection']['target_classes']
+        })
+        
+        self.ood_detector = OODDetector(ood_config)
+        
         self.detection_pipeline = DetectionPipeline(
             self.fruit_detector,
             self.defect_segmenter,
-            self.api_handler
+            self.api_handler,
+            self.ood_detector
         )
-        
         
         # Photo capture settings
         self.capture_defective_only = self.app_config['photo_capture']['capture_defective_only']
@@ -121,11 +136,35 @@ class FruitDefectDetectionApp:
         self.telegram_token = self.telegram_config['telegram']['bot_token']
         self.telegram_user_ids = self.telegram_users['telegram_users']['user_ids']
         
+        # Initialize Telegram bot instance once if enabled
+        if self.telegram_enabled and self.telegram_token and self.telegram_token != "YOUR_TELEGRAM_BOT_TOKEN_HERE":
+            try:
+                from src.telegram.telegram_bot import TelegramBot
+                self.telegram_bot = TelegramBot(self.telegram_token, users_config_path='config/telegram_users.yaml')
+                self.logger.info("Telegram bot initialized successfully")
+            except ImportError:
+                self.logger.warning("Telegram bot module not found, skipping notifications")
+                self.telegram_bot = None
+            except Exception as e:
+                self.logger.error(f"Error initializing Telegram bot: {e}")
+                self.telegram_bot = None
+        else:
+            self.telegram_bot = None
+            if self.telegram_enabled:
+                self.logger.warning("Telegram is enabled but no valid token provided, skipping notifications")
+        
         # Create save directory if it doesn't exist
         Path(self.image_save_path).mkdir(parents=True, exist_ok=True)
         
-        # Deduplication tracking - tracks the last sent detection for each fruit class
-        self.last_sent_detection = {}  # key: fruit_class, value: dict with is_defective and other properties (excluding confidence)
+        # Initialize background image monitor to run as a separate thread
+        self.image_monitor = BackgroundImageMonitor(
+            config_path='config/app_config.yaml',
+            folder_path=self.image_save_path
+        )
+        
+        # Start the image monitor in a separate thread
+        self.image_monitor.start_monitoring()
+        
         
         # Exit flag for graceful shutdown
         self.exit_flag = threading.Event()
@@ -135,59 +174,6 @@ class FruitDefectDetectionApp:
         signal.signal(signal.SIGTERM, self._signal_handler)
 
 
-    def _is_duplicate_detection(self, detection_data):
-        """
-        Check if this detection is a duplicate that should be suppressed.
-        Only suppress notifications if it's the same fruit type with same defect status and properties
-        (excluding confidence values which naturally vary).
-        
-        Args:
-            detection_data (dict): Detection information to check
-            
-        Returns:
-            bool: True if this is a duplicate that should be suppressed, False otherwise
-        """
-        fruit_class = detection_data['fruit_class']
-        is_defective = detection_data['is_defective']
-        
-        # Create a key for comparison that excludes confidence (which naturally varies)
-        detection_key = (
-            detection_data['fruit_class'],
-            detection_data['is_defective']
-        )
-        
-        # Check if we have sent a notification for this fruit class before
-        if fruit_class in self.last_sent_detection:
-            # Compare with the last sent detection for this fruit class
-            last_detection = self.last_sent_detection[fruit_class]
-            
-            # Create a key for the last sent detection
-            last_detection_key = (
-                last_detection['fruit_class'],
-                last_detection['is_defective']
-            )
-            
-            # If keys match, this is a duplicate
-            if detection_key == last_detection_key:
-                return True
-        
-        # This is a new detection or different from the last one sent
-        return False
-
-
-    def _update_last_sent_detection(self, detection_data):
-        """
-        Update the tracking for the last sent detection of this fruit class.
-        
-        Args:
-            detection_data (dict): Detection information that was sent
-        """
-        fruit_class = detection_data['fruit_class']
-        # Store the detection properties that define uniqueness (fruit class and defect status)
-        self.last_sent_detection[fruit_class] = {
-            'fruit_class': detection_data['fruit_class'],
-            'is_defective': detection_data['is_defective']
-        }
 
     def _signal_handler(self, signum, frame):
         """Handle termination signals for graceful shutdown."""
@@ -373,13 +359,6 @@ class FruitDefectDetectionApp:
                             except Exception as e:
                                 self.logger.error(f"Error sending Telegram notification: {e}")
                         
-                        # Send to Telegram if enabled (internal detection data with bbox)
-                        if self.telegram_enabled:
-                            try:
-                                self._send_telegram_notification(detection_data, image_path)
-                            except Exception as e:
-                                self.logger.error(f"Error sending Telegram notification: {e}")
-                        
                         self.logger.info(f"Processed detection: {fruit_class}, defective: {is_defective}, confidence: {confidence:.2f}")
                 except Exception as e:
                     self.logger.error(f"Error during detection processing: {e}")
@@ -391,13 +370,10 @@ class FruitDefectDetectionApp:
                 if detection_results:
                     try:
                         # Log the detection for potential retrieval via /showlogs command
-                        if self.telegram_enabled:
-                            # Import telegram bot module if available
-                            from src.telegram.telegram_bot import TelegramBot
-                            bot = TelegramBot(self.telegram_token, users_config_path='config/telegram_users.yaml')
-                            # Log each detection
+                        if self.telegram_enabled and self.telegram_bot:
+                            # Use the existing telegram bot instance to log each detection
                             for detection_data in all_detection_data:
-                                bot.log_detection(detection_data)
+                                self.telegram_bot.log_detection(detection_data)
                         # Log the first detection details
                         first_detection = all_detection_data[0] if all_detection_data else None
                         if first_detection:
@@ -449,42 +425,32 @@ class FruitDefectDetectionApp:
 
     def _send_telegram_notification(self, detection_data, image_path=None):
         """Send detection notification via Telegram."""
-        # Import telegram bot module if available
-        try:
-            from src.telegram.telegram_bot import TelegramBot
+        # Check if telegram is enabled and we have a bot instance
+        if not self.telegram_enabled or not self.telegram_bot:
+            return
             
-            # Check if this detection is a duplicate that should be suppressed
-            if not self._is_duplicate_detection(detection_data):
-                # Initialize the bot
-                bot = TelegramBot(self.telegram_token, users_config_path='config/telegram_users.yaml')
-                
-                # Log the detection for potential retrieval via /showlogs command
-                bot.log_detection(detection_data)
-                
-                # Prepare message
-                message = (
-                    f"🍎 Fruit Detection Alert 🍎\n"
-                    f"Fruit: {detection_data['fruit_class']}\n"
-                    f"Defective: {'Yes' if detection_data['is_defective'] else 'No'}\n"
-                    f"Confidence: {detection_data['confidence']:.2f}\n"
-                    f"Time: {detection_data['timestamp']}"
-                )
-                
-                # Send message to all authorized users asynchronously to avoid blocking
-                for user_id in self.telegram_user_ids:
-                    try:
-                        # Use async method to avoid blocking the main thread
-                        bot.send_message_async(user_id, message, image_path, timeout=30)
-                        self.logger.info(f"Started async Telegram notification to user {user_id}")
-                    except Exception as e:
-                        self.logger.error(f"Failed to start async Telegram message to {user_id}: {e}")
-                
-                # Update the tracking for the last sent detection
-                self._update_last_sent_detection(detection_data)
-            else:
-                self.logger.info(f"Suppressed duplicate notification for {detection_data['fruit_class']} (defective: {detection_data['is_defective']})")
-        except ImportError:
-            self.logger.warning("Telegram bot module not found, skipping notifications")
+        try:
+            # Log the detection for potential retrieval via /showlogs command
+            self.telegram_bot.log_detection(detection_data)
+            
+            # Prepare message
+            message = (
+                f"🍎 Fruit Detection Alert 🍎\n"
+                f"Fruit: {detection_data['fruit_class']}\n"
+                f"Defective: {'Yes' if detection_data['is_defective'] else 'No'}\n"
+                f"Confidence: {detection_data['confidence']:.2f}\n"
+                f"Time: {detection_data['timestamp']}"
+            )
+            
+            # Send message to all authorized users asynchronously to avoid blocking
+            for user_id in self.telegram_user_ids:
+                try:
+                    # Use async method to avoid blocking the main thread
+                    self.telegram_bot.send_message_async(user_id, message, image_path, timeout=30)
+                    self.logger.info(f"Started async Telegram notification to user {user_id}")
+                except Exception as e:
+                    self.logger.error(f"Failed to start async Telegram message to {user_id}: {e}")
+                    
         except Exception as e:
             self.logger.error(f"Error sending Telegram notification: {e}")
 
@@ -497,6 +463,21 @@ class FruitDefectDetectionApp:
         
         if not self.use_static_image:
             self.camera.stop()
+        
+        # Stop image monitor if it's running
+        try:
+            self.image_monitor.stop_monitoring()
+        except:
+            # The monitor might not be running in continuous mode, which is fine
+            pass
+        
+        # Clean up telegram bot if it exists
+        if hasattr(self, 'telegram_bot') and self.telegram_bot:
+            try:
+                self.telegram_bot.cleanup()
+                self.logger.info("Telegram bot cleaned up successfully")
+            except Exception as e:
+                self.logger.error(f"Error cleaning up telegram bot: {e}")
         
         self.logger.info("Application shutdown complete")
 

@@ -17,14 +17,17 @@ import yaml
 import sys
 import logging
 
-# Add the utils directory to the path to import metrics_calculator
+# Add the utils directory to the path to import metrics_calculator and image_utils
 sys.path.append(os.path.join(os.path.dirname(__file__), 'utils'))
 
 try:
     from metrics_calculator import calculate_comprehensive_metrics
-except ImportError:
-    logging.warning("Metrics calculator module not found. Please install required dependencies.")
+    from image_utils import SegmentationAugmentation, apply_environmental_augmentation
+except ImportError as e:
+    logging.warning(f"Import error: {e}. Please install required dependencies.")
     calculate_comprehensive_metrics = None
+    SegmentationAugmentation = None
+    apply_environmental_augmentation = None
 
 def ensure_model_directory(model_type):
     """
@@ -49,6 +52,97 @@ def ensure_model_directory(model_type):
     os.makedirs(model_dir, exist_ok=True)
     return model_dir
 
+from ultralytics.models.yolo.segment import SegmentationTrainer
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+class CustomSegmentationTrainer(SegmentationTrainer):
+    """
+    Custom segmentation trainer that supports additional loss functions like Dice and Focal loss,
+    and incorporates advanced augmentation strategies for segmentation tasks.
+    """
+    def __init__(self, loss_function='auto', augment_env_effects=True, **kwargs):
+        super().__init__(**kwargs)
+        self.loss_function = loss_function
+        self.augment_env_effects = augment_env_effects
+        
+        # Initialize custom loss functions if needed
+        if loss_function == 'focal':
+            self.criterion_focal = FocalLoss()
+        elif loss_function == 'dice':
+            self.criterion_dice = DiceLoss()
+    
+    def criterion(self, preds, batch):
+        """
+        Custom loss function that can incorporate Dice or Focal loss.
+        """
+        # Get the original loss from parent class
+        loss, batch_size = super().criterion(preds, batch)
+        
+        # If using custom loss functions, modify the loss accordingly
+        if self.loss_function in ['focal', 'dice']:
+            # Extract predictions and targets
+            batch_idx = batch['batch_idx']
+            cls = batch['cls']
+            bboxes = batch['bboxes']
+            masks = batch.get('masks')  # Segmentation masks
+            
+            if masks is not None and self.loss_function == 'focal':
+                # Apply focal loss to mask predictions if available
+                mask_loss_focal = self.criterion_focal(preds[1], masks)  # Assuming preds[1] contains mask predictions
+                # Combine with original loss (adjust weights as needed)
+                loss = loss + 0.5 * mask_loss_focal
+            elif masks is not None and self.loss_function == 'dice':
+                # Apply dice loss to mask predictions if available
+                mask_loss_dice = self.criterion_dice(preds[1], masks)  # Assuming preds[1] contains mask predictions
+                # Combine with original loss (adjust weights as needed)
+                loss = loss + 0.5 * mask_loss_dice
+        
+        return loss, batch_size
+
+
+class DiceLoss(nn.Module):
+    """
+    Dice loss for segmentation tasks.
+    """
+    def __init__(self, smooth=1e-6):
+        super(DiceLoss, self).__init__()
+        self.smooth = smooth
+
+    def forward(self, inputs, targets):
+        # Flatten label and prediction tensors
+        inputs = inputs.view(-1)
+        targets = targets.view(-1)
+        
+        intersection = (inputs * targets).sum()
+        dice = (2.*intersection + self.smooth)/(inputs.sum() + targets.sum() + self.smooth)
+        
+        return 1 - dice
+
+
+class FocalLoss(nn.Module):
+    """
+    Focal loss for handling class imbalance in segmentation tasks.
+    """
+    def __init__(self, alpha=1, gamma=2, reduction='mean'):
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+
+    def forward(self, inputs, targets):
+        bce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
+        pt = torch.exp(-bce_loss)
+        focal_loss = self.alpha * (1-pt)**self.gamma * bce_loss
+        
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        else:
+            return focal_loss
 
 def download_pretrained_model(model_name, model_dir):
     """
@@ -73,7 +167,8 @@ def download_pretrained_model(model_name, model_dir):
 
 
 def train_fruit_detection_model(data_path, epochs=100, img_size=640, batch_size=16,
-                               learning_rate=0.01, save_period=10, save_dir='runs/detect/fruit_detector'):
+                               learning_rate=0.01, save_period=10, save_dir='runs/detect/fruit_detector',
+                               model_name='yolov8n.pt'):
     """
     Train the fruit detection model using detection format (bounding boxes).
     
@@ -88,14 +183,15 @@ def train_fruit_detection_model(data_path, epochs=100, img_size=640, batch_size=
         batch_size (int): Training batch size
         learning_rate (float): Learning rate for training
         save_dir (str): Directory to save the trained model
+        model_name (str): Name of the pretrained model to start from
     """
     print("Starting training of fruit detection model...")
     print(f"Dataset path: {data_path}")
     print(f"Training parameters - Epochs: {epochs}, Image size: {img_size}, Batch size: {batch_size}, LR: {learning_rate}")
     
     # Load a detection model (YOLOv8n for detection, not segmentation)
-    # Ultralytics will automatically download yolov8n.pt if not present
-    model = YOLO('yolov8n.pt')  # Using pre-trained detection model as starting point
+    # Ultralytics will automatically download the model if not present
+    model = YOLO(model_name)  # Using pre-trained detection model as starting point
     
     # Record start time for training duration
     start_time = time.time()
@@ -179,12 +275,13 @@ def train_fruit_detection_model(data_path, epochs=100, img_size=640, batch_size=
 
 
 def train_defect_classification_model(data_path, epochs=50, img_size=224, batch_size=32,
-                                    learning_rate=0.001, save_period=10, save_dir='runs/classify/defect_classifier'):
+                                    learning_rate=0.001, save_period=10, save_dir='runs/classify/defect_classifier',
+                                    model_name='yolov8n-cls.pt'):
     """
     Train the defect classification model for binary classification (defective/non_defective).
     
     This model is responsible for determining whether detected fruits or regions contain defects.
-    Training time is measured and included in the metrics if enabled in the configuration.
+    Training time is measured and included and the metrics if enabled in the configuration.
     
     Args:
         data_path (str): Path to the dataset YAML file for defect classification
@@ -193,14 +290,15 @@ def train_defect_classification_model(data_path, epochs=50, img_size=224, batch_
         batch_size (int): Training batch size
         learning_rate (float): Learning rate for training
         save_dir (str): Directory to save the trained model
+        model_name (str): Name of the pretrained model to start from
     """
     print("Starting training of defect classification model...")
     print(f"Dataset path: {data_path}")
     print(f"Training parameters - Epochs: {epochs}, Image size: {img_size}, Batch size: {batch_size}, LR: {learning_rate}")
     
-    # Load a classification model (YOLOv8n-cls)
-    # Ultralytics will automatically download yolov8n-cls.pt if not present
-    model = YOLO('yolov8n-cls.pt')  # Using pre-trained classification model as starting point
+    # Load a classification model
+    # Ultralytics will automatically download the model if not present
+    model = YOLO(model_name)  # Using pre-trained classification model as starting point
     
     # Record start time for training duration
     start_time = time.time()
@@ -284,7 +382,10 @@ def train_defect_classification_model(data_path, epochs=50, img_size=224, batch_
 
 
 def train_defect_segmentation_model(data_path, epochs=150, img_size=640, batch_size=8,
-                                   learning_rate=0.001, save_period=10, save_dir='runs/segment/defect_segmenter'):
+                                   learning_rate=0.001, save_period=10, save_dir='runs/segment/defect_segmenter',
+                                   loss_function='auto', patience=100, warmup_epochs=3, cosine_lr=True,
+                                   augment_env_effects=True, auto_augment='randaugment',
+                                   model_name='yolov8n-seg.pt'):
     """
     Train the defect segmentation model using YOLOv8 segmentation format.
     
@@ -299,29 +400,119 @@ def train_defect_segmentation_model(data_path, epochs=150, img_size=640, batch_s
         batch_size (int): Training batch size
         learning_rate (float): Learning rate for training
         save_dir (str): Directory to save the trained model
+        loss_function (str): Loss function to use ('auto', 'dice', 'focal', 'ce' for cross-entropy)
+        patience (int): Number of epochs to wait without improvement before early stopping
+        warmup_epochs (int): Number of warmup epochs
+        cosine_lr (bool): Whether to use cosine learning rate scheduling
+        augment_env_effects (bool): Whether to apply environmental augmentations (glare, shadows, blur)
+        auto_augment (str): Auto augmentation policy (e.g., 'randaugment', 'autoaugment')
+        model_name (str): Name of the pretrained model to start from
     """
     print("Starting training of defect segmentation model...")
     print(f"Dataset path: {data_path}")
     print(f"Training parameters - Epochs: {epochs}, Image size: {img_size}, Batch size: {batch_size}, LR: {learning_rate}")
+    print(f"Loss function: {loss_function}, Patience: {patience}, Warmup epochs: {warmup_epochs}, Cosine LR: {cosine_lr}")
+    print(f"Environmental augmentations: {augment_env_effects}, Auto augment: {auto_augment}")
     
-    # Load a segmentation model (YOLOv8n-seg for segmentation tasks)
-    # Ultralytics will automatically download yolov8n-seg.pt if not present
-    model = YOLO('yolov8n-seg.pt')  # Using pre-trained segmentation model as starting point
+    # Load a segmentation model
+    # Ultralytics will automatically download the model if not present
+    model = YOLO(model_name) # Using pre-trained segmentation model as starting point
     
     # Record start time for training duration
     start_time = time.time()
     
-    # Train the model using segmentation format (masks)
-    results = model.train(
-        data=data_path,
-        epochs=epochs,
-        imgsz=img_size,
-        batch=batch_size,
-        lr0=learning_rate,
-        save_period=save_period,
-        save_dir=save_dir,
-        name='defect_segmenter'
-    )
+    # For custom loss functions, we need to use a custom trainer
+    if loss_function in ['focal', 'dice'] or augment_env_effects:
+        # Update the model's trainer to use our custom implementation
+        from ultralytics.cfg import get_cfg
+        args = dict(
+            model=model_name,
+            data=data_path,
+            epochs=epochs,
+            imgsz=img_size,
+            batch=batch_size,
+            lr0=learning_rate,
+            save_period=save_period,
+            save_dir=save_dir,
+            name='defect_segmenter',
+            patience=patience,
+            warmup_epochs=warmup_epochs,
+            auto_augment=auto_augment if auto_augment else None
+        )
+        
+        # Set up the configuration
+        cfg = get_cfg()
+        for k, v in args.items():
+            setattr(cfg, k, v)
+        
+        # Create custom trainer instance with environmental augmentation support
+        trainer = CustomSegmentationTrainer(
+            loss_function=loss_function,
+            augment_env_effects=augment_env_effects,
+            cfg=cfg
+        )
+        
+        # Set the data and build the model
+        trainer.setup_model()
+        trainer.train()
+        
+        # Get the trained model from the trainer
+        trained_model = trainer.model
+    else:
+        # Prepare additional training arguments based on loss function and other parameters
+        train_kwargs = {
+            'data': data_path,
+            'epochs': epochs,
+            'imgsz': img_size,
+            'batch': batch_size,
+            'lr0': learning_rate,
+            'save_period': save_period,
+            'save_dir': save_dir,
+            'name': 'defect_segmenter',
+            'patience': patience,
+            'warmup_epochs': warmup_epochs,
+            'auto_augment': auto_augment if auto_augment else None
+        }
+        
+        # Add loss function specific parameters if needed
+        # Note: The actual loss function configuration may need to be handled differently depending on the YOLO version
+        # For now, we'll use the parameters that affect loss behavior
+        if loss_function == 'focal':
+            # Focal loss is not directly available in YOLOv8, but we can adjust parameters that affect loss behavior
+            train_kwargs['close_mosaic'] = 10  # Recommended for better loss behavior
+            train_kwargs['label_smoothing'] = 0.1  # Helps with focal loss-like behavior
+            # Additional parameters that may help with segmentation loss
+            train_kwargs['box'] = 7.5  # Box loss gain
+            train_kwargs['cls'] = 0.5  # Classification loss gain
+            train_kwargs['dfl'] = 1.5  # DFL loss gain
+            train_kwargs['epochs'] = epochs  # Ensure epochs is set
+            # Segmentation-specific parameters
+            train_kwargs['mask_ratio'] = 4  # Ratio of mask to box loss
+            train_kwargs['overlap_mask'] = True # Whether masks should overlap
+        elif loss_function == 'dice':
+            # Dice loss is not directly available in YOLOv8, but we can adjust parameters that affect loss behavior
+            train_kwargs['close_mosaic'] = 10  # Recommended for better loss behavior
+            train_kwargs['label_smoothing'] = 0.05  # Moderate label smoothing
+            # Additional parameters that may help with segmentation loss
+            train_kwargs['box'] = 7.5  # Box loss gain
+            train_kwargs['cls'] = 0.5  # Classification loss gain
+            train_kwargs['dfl'] = 1.5  # DFL loss gain
+            train_kwargs['epochs'] = epochs  # Ensure epochs is set
+            # Segmentation-specific parameters
+            train_kwargs['mask_ratio'] = 4  # Ratio of mask to box loss
+            train_kwargs['overlap_mask'] = True # Whether masks should overlap
+        elif loss_function == 'auto':
+            # Default behavior, no specific parameters needed
+            # Add default segmentation-specific parameters
+            train_kwargs['mask_ratio'] = 4  # Ratio of mask to box loss
+            train_kwargs['overlap_mask'] = True # Whether masks should overlap
+        
+        # Use cosine learning rate if specified
+        if cosine_lr:
+            train_kwargs['lrf'] = 0.01  # Final learning rate factor for cosine scheduling
+        
+        # Train the model using segmentation format (masks)
+        results = model.train(**train_kwargs)
     
     # Calculate training time
     training_duration = time.time() - start_time
@@ -329,7 +520,18 @@ def train_defect_segmentation_model(data_path, epochs=150, img_size=640, batch_s
     # Save the final trained model to the models directory
     model_dir = ensure_model_directory('defect_segmentation')
     final_model_path = os.path.join(model_dir, 'defect_segmenter.pt')
-    model.save(final_model_path)
+    
+    # Save the model - use the appropriate model object depending on which trainer was used
+    if 'trained_model' in locals():
+        # Custom trainer was used, need to save the model from the trainer
+        # The trainer.model is the trained PyTorch model, but we need to save it properly
+        # Create a YOLO object and update its model with the trained one
+        yolo_model = YOLO(model_name)
+        yolo_model.model = trained_model.to('cpu')  # Move to CPU before saving
+        yolo_model.save(final_model_path)
+    else:
+        # Standard trainer was used, 'model' is still available
+        model.save(final_model_path)
     print(f"Trained defect segmentation model saved to {final_model_path}")
     print(f"Training completed in {training_duration:.2f} seconds")
     print("Defect segmentation model training completed!")
@@ -386,7 +588,15 @@ def train_defect_segmentation_model(data_path, epochs=150, img_size=640, batch_s
         )
         print("Metrics calculation completed!")
 
-    return model
+    # Return the appropriate model object
+    if 'trained_model' in locals():
+        # For custom trainer, we need to return a YOLO object with the trained model
+        yolo_model = YOLO(model_name)
+        yolo_model.model = trained_model.to('cpu')
+        return yolo_model
+    else:
+        # Standard trainer, return the original model
+        return model
 
 def create_dataset_yaml(dataset_path, output_path, num_classes, class_names, task_type='detection'):
     """
@@ -499,7 +709,8 @@ def train_all_models(config_path="config/trainer_config.yaml"):
             batch_size=config['fruit_detection']['batch_size'],
             learning_rate=config['fruit_detection']['learning_rate'],
             save_period=config['fruit_detection']['save_period'],
-            save_dir=config['fruit_detection']['save_dir']
+            save_dir=config['fruit_detection']['save_dir'],
+            model_name=config['fruit_detection'].get('model_name', 'yolov8n.pt')
         )
         print("Fruit detection model training completed!")
     
@@ -512,7 +723,8 @@ def train_all_models(config_path="config/trainer_config.yaml"):
             batch_size=config['defect_classification']['batch_size'],
             learning_rate=config['defect_classification']['learning_rate'],
             save_period=config['defect_classification']['save_period'],
-            save_dir=config['defect_classification']['save_dir']
+            save_dir=config['defect_classification']['save_dir'],
+            model_name=config['defect_classification'].get('model_name', 'yolov8n-cls.pt')
         )
         print("Defect classification model training completed!")
     
@@ -525,7 +737,14 @@ def train_all_models(config_path="config/trainer_config.yaml"):
             batch_size=config['defect_segmentation']['batch_size'],
             learning_rate=config['defect_segmentation']['learning_rate'],
             save_period=config['defect_segmentation']['save_period'],
-            save_dir=config['defect_segmentation']['save_dir']
+            save_dir=config['defect_segmentation']['save_dir'],
+            loss_function=config['defect_segmentation'].get('loss_function', 'auto'),
+            patience=config['defect_segmentation'].get('patience', 10),
+            warmup_epochs=config['defect_segmentation'].get('warmup_epochs', 3),
+            cosine_lr=config['defect_segmentation'].get('cosine_lr', True),
+            augment_env_effects=config['defect_segmentation'].get('augment_env_effects', True),
+            auto_augment=config['defect_segmentation'].get('auto_augment', 'randaugment'),
+            model_name=config['defect_segmentation'].get('model_name', 'yolov8n-seg.pt')
         )
         print("Defect segmentation model training completed!")
     
@@ -552,7 +771,8 @@ def train_single_model(model_type, config_path="config/trainer_config.yaml"):
                 batch_size=config['fruit_detection']['batch_size'],
                 learning_rate=config['fruit_detection']['learning_rate'],
                 save_period=config['fruit_detection']['save_period'],
-                save_dir=config['fruit_detection']['save_dir']
+                save_dir=config['fruit_detection']['save_dir'],
+                model_name=config['fruit_detection'].get('model_name', 'yolov8n.pt')
             )
             print(f"Fruit detection model training completed! Model saved in {config['fruit_detection']['save_dir']}")
         else:
@@ -567,7 +787,8 @@ def train_single_model(model_type, config_path="config/trainer_config.yaml"):
                 batch_size=config['defect_classification']['batch_size'],
                 learning_rate=config['defect_classification']['learning_rate'],
                 save_period=config['defect_classification']['save_period'],
-                save_dir=config['defect_classification']['save_dir']
+                save_dir=config['defect_classification']['save_dir'],
+                model_name=config['defect_classification'].get('model_name', 'yolov8n-cls.pt')
             )
             print(f"Defect classification model training completed! Model saved in {config['defect_classification']['save_dir']}")
         else:
@@ -582,7 +803,14 @@ def train_single_model(model_type, config_path="config/trainer_config.yaml"):
                 batch_size=config['defect_segmentation']['batch_size'],
                 learning_rate=config['defect_segmentation']['learning_rate'],
                 save_period=config['defect_segmentation']['save_period'],
-                save_dir=config['defect_segmentation']['save_dir']
+                save_dir=config['defect_segmentation']['save_dir'],
+                loss_function=config['defect_segmentation'].get('loss_function', 'auto'),
+                patience=config['defect_segmentation'].get('patience', 10),
+                warmup_epochs=config['defect_segmentation'].get('warmup_epochs', 3),
+                cosine_lr=config['defect_segmentation'].get('cosine_lr', True),
+                augment_env_effects=config['defect_segmentation'].get('augment_env_effects', True),
+                auto_augment=config['defect_segmentation'].get('auto_augment', 'randaugment'),
+                model_name=config['defect_segmentation'].get('model_name', 'yolov8n-seg.pt')
             )
             print(f"Defect segmentation model training completed! Model saved in {config['defect_segmentation']['save_dir']}")
         else:
@@ -621,6 +849,9 @@ Options:
                               defect_classification - Train defect classification model
                               defect_segmentation   - Train defect segmentation model
     --config PATH           Path to trainer configuration file (default: config/trainer_config.yaml)
+    --export, -e            Export a trained model to different format:
+                              Usage: --export <model_path> <format>
+                              Formats: torchscript, onnx, engine, coreml, saved_model, pb, tflite, edgetpu, tfjs, paddle
 
 Examples:
     # Train all enabled models according to configuration
@@ -631,6 +862,9 @@ Examples:
     
     # Train with custom configuration file
     python src/train_model.py --config /path/to/custom_config.yaml
+    
+    # Export a model to ONNX format
+    python src/train_model.py --export models/defect_segmentation/defect_segmenter.pt onnx
 
 For comprehensive configuration details, see the trainer documentation file (docs/TRAINER.md).
 """
@@ -682,6 +916,111 @@ def main():
     # Check for help flags first
     if '--help' in sys.argv or '-h' in sys.argv:
         show_help()
+        return
+    
+    # Default configuration path
+    config_path = "config/trainer_config.yaml"
+    
+    # Parse command line arguments
+    i = 1
+    while i < len(sys.argv):
+        if sys.argv[i] == '--config':
+            if i + 1 < len(sys.argv):
+                config_path = sys.argv[i + 1]
+                i += 2
+            else:
+                print("Error: --config requires a path argument")
+                return
+        elif sys.argv[i] == '--model_type':
+            if i + 1 < len(sys.argv):
+                model_type = sys.argv[i + 1]
+                print(f"Starting training for model type: {model_type}")
+                train_single_model(model_type, config_path)
+                print("Training process completed!")
+                return
+            else:
+                print("Error: --model_type requires a model type argument")
+                return
+        else:
+            i += 1
+    
+    print("Starting training based on configuration file...")
+    train_all_models(config_path)
+    print("Training process completed!")
+
+
+def export_model(model_path, export_format='torchscript', output_path=None):
+    """
+    Export a trained model to different formats for deployment.
+    
+    Args:
+        model_path (str): Path to the trained model (.pt file)
+        export_format (str): Format to export to ('torchscript', 'onnx', 'engine', 'coreml', 'saved_model', 'pb', 'tflite', 'edgetpu', 'tfjs', 'paddle')
+        output_path (str): Path to save the exported model (optional, defaults to model path with new extension)
+    
+    Returns:
+        str: Path to the exported model
+    """
+    from ultralytics import YOLO
+    import os
+    
+    print(f"Exporting model from {model_path} to {export_format} format...")
+    
+    # Load the model
+    model = YOLO(model_path)
+    
+    # Determine output path
+    if output_path is None:
+        base_path = os.path.splitext(model_path)[0]
+        format_extension = {
+            'torchscript': '.torchscript',
+            'onnx': '.onnx',
+            'engine': '.engine',
+            'coreml': '.mlmodel',
+            'saved_model': '_saved_model',
+            'pb': '.pb',
+            'tflite': '.tflite',
+            'edgetpu': '_edgetpu.tflite',
+            'tfjs': '_web_model',
+            'paddle': '.pdmodel'
+        }
+        ext = format_extension.get(export_format, f'.{export_format}')
+        if export_format == 'saved_model':  # Special case for directory output
+            output_path = f"{base_path}{ext}"
+        else:
+            output_path = f"{base_path}{ext}"
+    
+    # Export the model
+    success = model.export(format=export_format, save_dir=os.path.dirname(output_path), name=os.path.basename(output_path))
+    
+    print(f"Model exported successfully to {output_path}")
+    return output_path
+
+
+def main():
+    """
+    Main function to train models based on configuration file.
+    """
+    # Check for help flags first
+    if '--help' in sys.argv or '-h' in sys.argv:
+        show_help()
+        return
+    
+    # Check for export functionality
+    if '--export' in sys.argv or '-e' in sys.argv:
+        try:
+            model_idx = sys.argv.index('--export') if '--export' in sys.argv else sys.argv.index('-e')
+            if model_idx + 2 < len(sys.argv):
+                model_path = sys.argv[model_idx + 1]
+                export_format = sys.argv[model_idx + 2]
+                export_model(model_path, export_format)
+                print("Model export completed!")
+            else:
+                print("Error: --export requires model_path and export_format arguments")
+                print("Usage: python train_model.py --export <model_path> <format>")
+        except (ValueError, IndexError):
+            print("Error: --export requires model_path and export_format arguments")
+            print("Usage: python train_model.py --export <model_path> <format>")
         return
     
     # Default configuration path

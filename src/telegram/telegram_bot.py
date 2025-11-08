@@ -1,17 +1,38 @@
 """
 Telegram Bot module for the Fruit Defect Detection System.
 
-This module handles sending notifications via Telegram bot.
+This module handles sending notifications via Telegram bot using python-telegram-bot library.
 """
-
 import logging
-import requests
 from pathlib import Path
+import threading
+import time
+import queue
+from datetime import datetime
+from dataclasses import dataclass
+from typing import Dict, Optional, List, Any, Callable
+from telegram import Update, Bot
+from telegram.ext import Application, ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.error import TelegramError
+import yaml
+
+
+@dataclass
+class QueuedMessage:
+    """
+    Represents a message waiting to be sent with its metadata.
+    """
+    chat_id: int
+    message: str
+    image_path: Optional[str]
+    timeout: int
+    timestamp: float
+    callback: Optional[Callable]
 
 
 class TelegramBot:
     """
-    A class to handle Telegram bot operations for sending notifications.
+    A class to handle Telegram bot operations for sending notifications using python-telegram-bot.
     """
     
     def __init__(self, bot_token, users_config_path='config/telegram_users.yaml'):
@@ -23,12 +44,316 @@ class TelegramBot:
             users_config_path (str): Path to the users config file
         """
         self.bot_token = bot_token
-        self.base_url = f"https://api.telegram.org/bot{bot_token}"
         self.logger = logging.getLogger(__name__)
         self.users_config_path = users_config_path
         self.authorized_users = self._load_authorized_users()
         self.detection_logs = []  # Store detection logs
-        self.last_update_id = 0  # For long polling
+        
+        # Initialize the application
+        self.application = ApplicationBuilder().token(bot_token).build()
+        self.bot = self.application.bot
+        
+        # Load rate limiting configuration
+        self._load_rate_limit_config()
+        
+        # Track last message time for rate limiting
+        self.last_message_time = 0
+        
+        # Removed comprehensive rate limiting system
+        # Now send messages immediately without any cooldown or rate limiting
+        self.message_queue = queue.Queue()  # Queue for messages (though we'll send immediately now)
+        self.queue_processor_thread = None # Thread to process the message queue
+        self.queue_processor_running = False # Flag to control the queue processor
+        
+        # Start the queue processor thread
+        self._start_queue_processor()
+        
+        # Add command handlers
+        self._add_handlers()
+        
+    def _load_rate_limit_config(self):
+        """
+        Load rate limit configuration from the telegram config file.
+        """
+        try:
+            # Load telegram config
+            config_path = Path('config/telegram_config.yaml')
+            if config_path.exists():
+                with open(config_path, 'r') as file:
+                    config = yaml.safe_load(file)
+                    telegram_config = config.get('telegram', {})
+                    self.rate_limit_seconds = telegram_config.get('rate_limit_seconds', 5)
+                    self.logger.info(f"Rate limit loaded: {self.rate_limit_seconds} seconds")
+            else:
+                # Default rate limit if config file doesn't exist
+                self.rate_limit_seconds = 5
+                self.logger.warning(f"Config file {config_path} not found, using default rate limit of {self.rate_limit_seconds} seconds")
+        except Exception as e:
+            self.logger.error(f"Error loading rate limit config: {e}")
+            self.rate_limit_seconds = 5  # Default to 5 seconds
+            
+    def _check_rate_limit(self):
+        """
+        Check if enough time has passed since the last message to respect the rate limit.
+        
+        Returns:
+            bool: True if message can be sent, False if rate limit is exceeded
+        """
+        current_time = time.time()
+        time_since_last_message = current_time - self.last_message_time
+        
+        if time_since_last_message < self.rate_limit_seconds:
+            remaining_time = self.rate_limit_seconds - time_since_last_message
+            self.logger.warning(f"Rate limit exceeded. Waiting {remaining_time:.2f}s before sending next message. Rate limit: {self.rate_limit_seconds}s")
+            return False
+            
+        return True
+        
+    def _update_last_message_time(self):
+        """
+        Update the timestamp of the last message sent.
+        """
+        self.last_message_time = time.time()
+        
+    def _add_handlers(self):
+        """Add command and message handlers to the application."""
+        # Command handlers
+        self.application.add_handler(CommandHandler('start', self._start_command))
+        self.application.add_handler(CommandHandler('help', self._help_command))
+        self.application.add_handler(CommandHandler('adduser', self._adduser_command))
+        self.application.add_handler(CommandHandler('showlogs', self._showlogs_command))
+        
+        # Handle unknown commands
+        self.application.add_handler(MessageHandler(filters.COMMAND, self._unknown_command))
+        
+        # Add error handler
+        self.application.add_error_handler(self._error_handler)
+    
+    async def _start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle the /start command."""
+        user_id = update.effective_user.id
+        
+        # Check rate limit before responding
+        if not self._check_rate_limit():
+            self.logger.warning(f"Command response dropped due to rate limit. User ID: {user_id}, Command: start")
+            await update.message.reply_text("⏳ Please wait before sending another command. Rate limit exceeded.")
+            return
+            
+        welcome_msg = (
+            "🍎 Welcome to the Fruit Defect Detection Bot! 🍎\n\n"
+            "I'm here to help you monitor fruit quality in real-time.\n\n"
+            "Available commands:\n"
+            "/help - Show this help message\n"
+            "/showlogs - Show recent detection logs (admin only)\n\n"
+            f"Your user ID: {user_id}\n"
+        )
+        
+        # Check if user is authorized
+        if self.is_authorized_user(user_id):
+            welcome_msg += "✅ You are an authorized user with admin privileges."
+        else:
+            welcome_msg += "ℹ️ You are not authorized for admin commands. Contact an admin to add you."
+        
+        await update.message.reply_text(welcome_msg)
+        # Update the last message time after sending the response
+        self._update_last_message_time()
+    
+    async def _help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle the /help command."""
+        user_id = update.effective_user.id
+        
+        # Check rate limit before responding
+        if not self._check_rate_limit():
+            self.logger.warning(f"Command response dropped due to rate limit. User ID: {user_id}, Command: help")
+            await update.message.reply_text("⏳ Please wait before sending another command. Rate limit exceeded.")
+            return
+            
+        help_msg = (
+            "🍎 Fruit Defect Detection Bot - Help 🍎\n\n"
+            "Available commands:\n"
+            "/start - Start interacting with the bot\n"
+            "/help - Show this help message\n"
+        )
+        
+        if self.is_authorized_user(user_id):
+            help_msg += (
+                "/adduser <username|user_id> - Add a user by username or user ID (admin only)\n"
+                "/showlogs [count] - Show recent detection logs (admin only)\n"
+            )
+        else:
+            help_msg += (
+                "\nℹ️ You are not authorized for admin commands. Contact an admin to add you.\n"
+            )
+            
+        help_msg += (
+            "\nFor any issues, contact the system administrator."
+        )
+        
+        await update.message.reply_text(help_msg)
+        # Update the last message time after sending the response
+        self._update_last_message_time()
+    
+    async def _adduser_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle the /adduser command."""
+        user_id = update.effective_user.id
+        
+        # Check rate limit before responding
+        if not self._check_rate_limit():
+            self.logger.warning(f"Command response dropped due to rate limit. User ID: {user_id}, Command: adduser")
+            await update.message.reply_text("⏳ Please wait before sending another command. Rate limit exceeded.")
+            return
+        
+        # Check if user is authorized
+        if not self.is_authorized_user(user_id):
+            await update.message.reply_text("❌ You are not authorized to use this command.")
+            # Update the last message time after sending the response
+            self._update_last_message_time()
+            return
+        
+        if not context.args:
+            await update.message.reply_text("❌ Usage: /adduser <username|user_id>\nExample: /adduser @username or /adduser 123456789")
+            # Update the last message time after sending the response
+            self._update_last_message_time()
+            return
+        
+        target = context.args[0]
+        
+        # Check if it's a username (starts with @) or a numeric user ID
+        if target.startswith('@') or target.lstrip('-').isdigit():
+            if target.startswith('@'):
+                # Add user by username
+                success = self.add_user_by_username(target, timeout=30)
+                if success:
+                    await update.message.reply_text(f"✅ Successfully added user {target} to authorized list.")
+                else:
+                    await update.message.reply_text(f"❌ Failed to add user {target}. Make sure the username exists and is correct.")
+            else:
+                # Add user by ID
+                try:
+                    user_id_to_add = int(target)
+                    success = self.add_user(user_id_to_add)
+                    if success:
+                        await update.message.reply_text(f"✅ Successfully added user ID {user_id_to_add} to authorized list.")
+                    else:
+                        await update.message.reply_text(f"❌ Failed to add user ID {user_id_to_add}.")
+                except ValueError:
+                    await update.message.reply_text(f"❌ Invalid user ID: {target}. User ID must be a number.")
+        else:
+            await update.message.reply_text(f"❌ Invalid format: {target}. Use @username or numeric user ID.")
+            
+        # Update the last message time after sending the response
+        self._update_last_message_time()
+    
+    async def _showlogs_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle the /showlogs command."""
+        user_id = update.effective_user.id
+        
+        # Check rate limit before responding
+        if not self._check_rate_limit():
+            self.logger.warning(f"Command response dropped due to rate limit. User ID: {user_id}, Command: showlogs")
+            await update.message.reply_text("⏳ Please wait before sending another command. Rate limit exceeded.")
+            return
+        
+        # Check if user is authorized
+        if not self.is_authorized_user(user_id):
+            await update.message.reply_text("❌ You are not authorized to use this command.")
+            # Update the last message time after sending the response
+            self._update_last_message_time()
+            return
+        
+        count = 10  # Default number of logs to show
+        
+        if context.args:
+            try:
+                count = int(context.args[0])
+                if count <= 0:
+                    count = 10
+                elif count > 50:  # Limit max logs to prevent spam
+                    count = 50
+            except ValueError:
+                await update.message.reply_text(f"❌ Invalid number: {context.args[0]}. Please provide a valid number.")
+                # Update the last message time after sending the response
+                self._update_last_message_time()
+                return
+        
+        logs = self.get_detection_logs(count)
+        
+        if not logs:
+            await update.message.reply_text("📝 No detection logs available.")
+            # Update the last message time after sending the response
+            self._update_last_message_time()
+            return
+        
+        response = f"📝 Recent Detection Logs (showing last {len(logs)}):\n\n"
+        
+        for i, log in enumerate(reversed(logs)):
+            detection = log['detection_data']
+            timestamp = log['timestamp']
+            image_path = detection.get('image_path', 'N/A')
+            response += (
+                f"Detection #{len(logs)-i}:\n"
+                f"  🍎 Fruit: {detection.get('fruit_class', 'Unknown')}\n"
+                f"  ❌ Defective: {'Yes' if detection.get('is_defective', False) else 'No'}\n"
+                f"  📊 Confidence: {detection.get('confidence', 0):.2f}\n"
+                f"  📸 Image: {image_path}\n"
+                f"  ⏰ Time: {timestamp}\n\n"
+            )
+        
+        await update.message.reply_text(response)
+        # Update the last message time after sending the response
+        self._update_last_message_time()
+    
+    async def _unknown_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle unknown commands."""
+        # Check rate limit before responding
+        if not self._check_rate_limit():
+            self.logger.warning("Command response dropped due to rate limit. User sent unknown command")
+            await update.message.reply_text("⏳ Please wait before sending another command. Rate limit exceeded.")
+            return
+            
+        await update.message.reply_text("❌ Unknown command. Use /help to see available commands.")
+        # Update the last message time after sending the response
+        self._update_last_message_time()
+    
+    async def _error_handler(self, update: object, context: ContextTypes.DEFAULT_TYPE):
+        """Log errors caused by updates."""
+        self.logger.error(f"Update {update} caused error {context.error}", exc_info=True)
+
+    def _start_queue_processor(self):
+        """
+        Start the message queue processor thread.
+        """
+        self.queue_processor_running = True
+        self.queue_processor_thread = threading.Thread(target=self._process_message_queue, daemon=True)
+        self.queue_processor_thread.start()
+
+    def _process_message_queue(self):
+        """
+        Process messages in the queue with rate limiting.
+        """
+        while self.queue_processor_running:
+            try:
+                # Get a message from the queue with timeout
+                queued_message = self.message_queue.get(timeout=1)
+                
+                if queued_message:
+                    # Send the message with rate limiting (the send_message method handles rate limiting)
+                    result = self.send_message(queued_message.chat_id, queued_message.message,
+                                             queued_message.image_path, queued_message.timeout)
+                    
+                    # Call the callback if provided
+                    if queued_message.callback:
+                        queued_message.callback(result, queued_message.chat_id)
+                
+                self.message_queue.task_done()
+                
+            except queue.Empty:
+                # Continue the loop if the queue is empty
+                continue
+            except Exception as e:
+                self.logger.error(f"Error in message queue processor: {e}")
+                continue
+
 
     def _load_authorized_users(self):
         """
@@ -38,9 +363,6 @@ class TelegramBot:
             set: Set of authorized user IDs
         """
         try:
-            import yaml
-            from pathlib import Path
-            
             config_path = Path(self.users_config_path)
             if config_path.exists():
                 with open(config_path, 'r') as file:
@@ -62,9 +384,6 @@ class TelegramBot:
             bool: True if saved successfully, False otherwise
         """
         try:
-            import yaml
-            from pathlib import Path
-            
             config_path = Path(self.users_config_path)
             
             # Create directory if it doesn't exist
@@ -86,6 +405,8 @@ class TelegramBot:
         except Exception as e:
             self.logger.error(f"Error saving authorized users: {e}")
             return False
+
+
 
     def is_authorized_user(self, user_id):
         """
@@ -132,20 +453,9 @@ class TelegramBot:
             if username.startswith('@'):
                 username = username[1:]
             
-            response = requests.get(f"{self.base_url}/getChat", params={'chat_id': f'@{username}'}, timeout=timeout)
-            if response.status_code == 200:
-                result = response.json()
-                if result.get('ok'):
-                    return result.get('result')
-                else:
-                    self.logger.error(f"Failed to get user by username: {result.get('description')}")
-                    return None
-            else:
-                self.logger.error(f"Failed to get user by username: {response.text}")
-                return None
-        except requests.exceptions.Timeout:
-            self.logger.error(f"Timeout occurred while getting user by username: {username}")
-            return None
+            # Using the bot's get_chat method to get user information
+            chat = self.bot.get_chat(f'@{username}')
+            return chat.to_dict() if chat else None
         except Exception as e:
             self.logger.error(f"Error getting user by username: {e}")
             return None
@@ -185,7 +495,6 @@ class TelegramBot:
             detection_data (dict): Detection information to log
         """
         try:
-            from datetime import datetime
             log_entry = {
                 'timestamp': datetime.now().isoformat(),
                 'detection_data': detection_data
@@ -218,7 +527,8 @@ class TelegramBot:
 
     def send_message(self, chat_id, message, image_path=None, timeout=30):
         """
-        Send a message to a Telegram chat, optionally with an image.
+        Send a message synchronously by wrapping the async method with thread synchronization.
+        This should only be used for critical messages that require immediate confirmation.
         
         Args:
             chat_id (int): The chat ID to send the message to
@@ -229,56 +539,60 @@ class TelegramBot:
         Returns:
             bool: True if the message was sent successfully, False otherwise
         """
-        try:
-            if image_path and Path(image_path).exists():
-                # Send photo with caption
-                with open(image_path, 'rb') as photo_file:
-                    files = {'photo': photo_file}
-                    data = {
-                        'chat_id': chat_id,
-                        'caption': message
-                    }
-                    
-                    response = requests.post(
-                        f"{self.base_url}/sendPhoto",
-                        files=files,
-                        data=data,
-                        timeout=timeout
-                    )
-            else:
-                # Send text-only message
-                data = {
-                    'chat_id': chat_id,
-                    'text': message
-                }
-                
-                response = requests.post(
-                    f"{self.base_url}/sendMessage",
-                    data=data,
-                    timeout=timeout
-                )
-        
-            if response.status_code == 200:
-                self.logger.info(f"Message sent successfully to chat {chat_id}")
-                return True
-            else:
-                self.logger.error(f"Failed to send message to chat {chat_id}: {response.text}")
-                return False
-                
-        except FileNotFoundError:
-            self.logger.error(f"Image file not found: {image_path}")
-            # Send text-only message instead
-            return self._send_text_message(chat_id, message, timeout=timeout)
-        except requests.exceptions.Timeout:
-            self.logger.error(f"Timeout occurred while sending message to chat {chat_id}")
+        # Check rate limit before sending
+        if not self._check_rate_limit():
+            self.logger.warning(f"Message dropped due to rate limit. Chat ID: {chat_id}, Message: {message[:50]}...")
             return False
+            
+        import asyncio
+        import concurrent.futures
+        
+        try:
+            def run_async():
+                async def send():
+                    try:
+                        if image_path and Path(image_path).exists():
+                            # Send message with image
+                            with open(image_path, 'rb') as image_file:
+                                await self.bot.send_photo(chat_id=chat_id, photo=image_file, caption=message)
+                            self.logger.info(f"Message with image sent successfully to chat {chat_id}")
+                            # Update the last message time after successful send
+                            self._update_last_message_time()
+                            return True
+                        else:
+                            # Send text-only message
+                            await self.bot.send_message(chat_id=chat_id, text=message)
+                            self.logger.info(f"Text message sent successfully to chat {chat_id}")
+                            # Update the last message time after successful send
+                            self._update_last_message_time()
+                            return True
+                    except TelegramError as e:
+                        self.logger.error(f"Failed to send message to chat {chat_id}: {e}")
+                        return False
+                
+                # Create a new event loop for this thread
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    result = loop.run_until_complete(send())
+                finally:
+                    loop.close()
+                return result
+            
+            # Run in a separate thread to avoid nested event loop issues
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(run_async)
+                result = future.result(timeout=timeout+5)
+            
+            return result
         except Exception as e:
-            self.logger.error(f"Error sending message to chat {chat_id}: {e}")
+            self.logger.error(f"Unexpected error sending message to chat {chat_id}: {e}")
             return False
 
+    
     def send_message_async(self, chat_id, message, image_path=None, timeout=30, callback=None):
         """
-        Send a message asynchronously in a separate thread to avoid blocking.
+        Send a message asynchronously with rate limiting.
         
         Args:
             chat_id (int): The chat ID to send the message to
@@ -288,28 +602,32 @@ class TelegramBot:
             callback (callable, optional): Function to call with the result (success, result)
             
         Returns:
-            threading.Thread: The thread object running the send operation
+            bool: True if message was queued for sending, False if dropped due to rate limit
         """
-        import threading
+        # Check rate limit before queuing
+        if not self._check_rate_limit():
+            self.logger.warning(f"Message dropped due to rate limit. Chat ID: {chat_id}, Message: {message[:50]}...")
+            return False
+            
+        # Create a queued message
+        queued_message = QueuedMessage(
+            chat_id=chat_id,
+            message=message,
+            image_path=image_path,
+            timeout=timeout,
+            timestamp=time.time(),
+            callback=callback
+        )
         
-        def send_task():
-            try:
-                result = self.send_message(chat_id, message, image_path, timeout=timeout)
-                if callback:
-                    callback(result, chat_id)
-            except Exception as e:
-                self.logger.error(f"Error in async send task for chat {chat_id}: {e}")
-                if callback:
-                    callback(False, chat_id)
+        # Add the message to the queue
+        self.message_queue.put(queued_message)
+        self.logger.debug(f"Message queued for chat {chat_id}. Queue size: {self.message_queue.qsize()}")
         
-        # Create and start the thread
-        thread = threading.Thread(target=send_task, daemon=True)
-        thread.start()
-        return thread
+        return True
 
     def _send_text_message(self, chat_id, message, timeout=30):
         """
-        Send a text-only message to a Telegram chat.
+        Send a text-only message to a Telegram chat with rate limiting.
         
         Args:
             chat_id (int): The chat ID to send the message to
@@ -319,77 +637,67 @@ class TelegramBot:
         Returns:
             bool: True if the message was sent successfully, False otherwise
         """
-        try:
-            data = {
-                'chat_id': chat_id,
-                'text': message
-            }
-            
-            response = requests.post(
-                f"{self.base_url}/sendMessage",
-                data=data,
-                timeout=timeout
-            )
-            
-            if response.status_code == 200:
-                self.logger.info(f"Text message sent successfully to chat {chat_id}")
-                return True
-            else:
-                self.logger.error(f"Failed to send text message to chat {chat_id}: {response.text}")
-                return False
-                
-        except requests.exceptions.Timeout:
-            self.logger.error(f"Timeout occurred while sending text message to chat {chat_id}")
+        # Check rate limit before sending
+        if not self._check_rate_limit():
+            self.logger.warning(f"Message dropped due to rate limit. Chat ID: {chat_id}, Message: {message[:50]}...")
             return False
+            
+        import asyncio
+        import concurrent.futures
+        
+        try:
+            def run_async():
+                async def send():
+                    try:
+                        await self.bot.send_message(chat_id=chat_id, text=message)
+                        self.logger.info(f"Text message sent successfully to chat {chat_id}")
+                        # Update the last message time after successful send
+                        self._update_last_message_time()
+                        return True
+                    except TelegramError as e:
+                        self.logger.error(f"Failed to send text message to chat {chat_id}: {e}")
+                        return False
+                
+                # Create a new event loop for this thread
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    result = loop.run_until_complete(send())
+                finally:
+                    loop.close()
+                return result
+            
+            # Run in a separate thread to avoid nested event loop issues
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(run_async)
+                result = future.result(timeout=timeout+5)
+            
+            return result
         except Exception as e:
-            self.logger.error(f"Error sending text message to chat {chat_id}: {e}")
+            self.logger.error(f"Unexpected error sending text message to chat {chat_id}: {e}")
             return False
 
-    def get_me(self, timeout=30):
+
+    async def get_me(self, timeout=30):
         """
         Get information about the bot.
+        
+        Args:
+            timeout (int): Timeout parameter kept for compatibility (not used by underlying method)
         
         Returns:
             dict: Bot information if successful, None otherwise
         """
         try:
-            response = requests.get(f"{self.base_url}/getMe", timeout=timeout)
-            if response.status_code == 200:
-                return response.json()
-            else:
-                self.logger.error(f"Failed to get bot info: {response.text}")
-                return None
-        except requests.exceptions.Timeout:
-            self.logger.error(f"Timeout occurred while getting bot info")
-            return None
+            bot_info = await self.bot.get_me()
+            return bot_info.to_dict() if bot_info else None
         except Exception as e:
             self.logger.error(f"Error getting bot info: {e}")
             return None
 
-    def get_updates(self, timeout=30):
-        """
-        Get updates for the bot (not used in this implementation).
-        
-        Returns:
-            dict: Updates if successful, None otherwise
-        """
-        try:
-            response = requests.get(f"{self.base_url}/getUpdates", timeout=timeout)
-            if response.status_code == 200:
-                return response.json()
-            else:
-                self.logger.error(f"Failed to get updates: {response.text}")
-                return None
-        except requests.exceptions.Timeout:
-            self.logger.error(f"Timeout occurred while getting updates")
-            return None
-        except Exception as e:
-            self.logger.error(f"Error getting updates: {e}")
-            return None
-
     def handle_command(self, user_id, command, args):
         """
-        Handle incoming commands from users.
+        Handle incoming commands from users. (This method is maintained for compatibility)
         
         Args:
             user_id (int): The ID of the user who sent the command
@@ -399,29 +707,38 @@ class TelegramBot:
         Returns:
             str: Response message to send back to the user
         """
+        # Check rate limit before processing any command response
+        if not self._check_rate_limit():
+            self.logger.warning(f"Command response dropped due to rate limit. User ID: {user_id}, Command: {command}")
+            return "⏳ Please wait before sending another command. Rate limit exceeded."
+            
         # Check if user is authorized for admin commands
         is_authorized = self.is_authorized_user(user_id)
         
         if command == 'start':
-            return self._handle_start_command(user_id)
+            response = self._handle_start_command(user_id)
         elif command == 'help':
-            return self._handle_help_command(user_id)
+            response = self._handle_help_command(user_id)
         elif command == 'adduser':
             if is_authorized:
-                return self._handle_adduser_command(user_id, args)
+                response = self._handle_adduser_command(user_id, args)
             else:
-                return "❌ You are not authorized to use this command."
+                response = "❌ You are not authorized to use this command."
         elif command == 'showlogs':
             if is_authorized:
-                return self._handle_showlogs_command(user_id, args)
+                response = self._handle_showlogs_command(user_id, args)
             else:
-                return "❌ You are not authorized to use this command."
+                response = "❌ You are not authorized to use this command."
         else:
-            return "❌ Unknown command. Use /help to see available commands."
+            response = "❌ Unknown command. Use /help to see available commands."
+            
+        # Update the last message time after preparing response
+        self._update_last_message_time()
+        return response
 
     def _handle_start_command(self, user_id):
         """
-        Handle the /start command.
+        Handle the /start command. (This method is maintained for compatibility)
         
         Args:
             user_id (int): The ID of the user who sent the command
@@ -429,6 +746,11 @@ class TelegramBot:
         Returns:
             str: Response message
         """
+        # Check rate limit before responding
+        if not self._check_rate_limit():
+            self.logger.warning(f"Command response dropped due to rate limit. User ID: {user_id}, Command: start")
+            return "⏳ Please wait before sending another command. Rate limit exceeded."
+            
         welcome_msg = (
             "🍎 Welcome to the Fruit Defect Detection Bot! 🍎\n\n"
             "I'm here to help you monitor fruit quality in real-time.\n\n"
@@ -444,11 +766,13 @@ class TelegramBot:
         else:
             welcome_msg += "ℹ️ You are not authorized for admin commands. Contact an admin to add you."
             
+        # Update the last message time after preparing response
+        self._update_last_message_time()
         return welcome_msg
 
     def _handle_help_command(self, user_id):
         """
-        Handle the /help command.
+        Handle the /help command. (This method is maintained for compatibility)
         
         Args:
             user_id (int): The ID of the user who sent the command
@@ -456,6 +780,11 @@ class TelegramBot:
         Returns:
             str: Response message
         """
+        # Check rate limit before responding
+        if not self._check_rate_limit():
+            self.logger.warning(f"Command response dropped due to rate limit. User ID: {user_id}, Command: help")
+            return "⏳ Please wait before sending another command. Rate limit exceeded."
+            
         help_msg = (
             "🍎 Fruit Defect Detection Bot - Help 🍎\n\n"
             "Available commands:\n"
@@ -477,11 +806,13 @@ class TelegramBot:
             "\nFor any issues, contact the system administrator."
         )
         
+        # Update the last message time after preparing response
+        self._update_last_message_time()
         return help_msg
 
     def _handle_adduser_command(self, user_id, args):
         """
-        Handle the /adduser command.
+        Handle the /adduser command. (This method is maintained for compatibility)
         
         Args:
             user_id (int): The ID of the user who sent the command
@@ -490,8 +821,16 @@ class TelegramBot:
         Returns:
             str: Response message
         """
+        # Check rate limit before responding
+        if not self._check_rate_limit():
+            self.logger.warning(f"Command response dropped due to rate limit. User ID: {user_id}, Command: adduser")
+            return "⏳ Please wait before sending another command. Rate limit exceeded."
+            
         if not args:
-            return "❌ Usage: /adduser <username|user_id>\nExample: /adduser @username or /adduser 123456789"
+            response = "❌ Usage: /adduser <username|user_id>\nExample: /adduser @username or /adduser 123456789"
+            # Update the last message time after preparing response
+            self._update_last_message_time()
+            return response
         
         target = args[0]
         
@@ -501,26 +840,30 @@ class TelegramBot:
                 # Add user by username
                 success = self.add_user_by_username(target, timeout=30)
                 if success:
-                    return f"✅ Successfully added user {target} to authorized list."
+                    response = f"✅ Successfully added user {target} to authorized list."
                 else:
-                    return f"❌ Failed to add user {target}. Make sure the username exists and is correct."
+                    response = f"❌ Failed to add user {target}. Make sure the username exists and is correct."
             else:
                 # Add user by ID
                 try:
                     user_id_to_add = int(target)
                     success = self.add_user(user_id_to_add)
                     if success:
-                        return f"✅ Successfully added user ID {user_id_to_add} to authorized list."
+                        response = f"✅ Successfully added user ID {user_id_to_add} to authorized list."
                     else:
-                        return f"❌ Failed to add user ID {user_id_to_add}."
+                        response = f"❌ Failed to add user ID {user_id_to_add}."
                 except ValueError:
-                    return f"❌ Invalid user ID: {target}. User ID must be a number."
+                    response = f"❌ Invalid user ID: {target}. User ID must be a number."
         else:
-            return f"❌ Invalid format: {target}. Use @username or numeric user ID."
+            response = f"❌ Invalid format: {target}. Use @username or numeric user ID."
+            
+        # Update the last message time after preparing response
+        self._update_last_message_time()
+        return response
 
     def _handle_showlogs_command(self, user_id, args):
         """
-        Handle the /showlogs command.
+        Handle the /showlogs command. (This method is maintained for compatibility)
         
         Args:
             user_id (int): The ID of the user who sent the command
@@ -529,6 +872,11 @@ class TelegramBot:
         Returns:
             str: Response message
         """
+        # Check rate limit before responding
+        if not self._check_rate_limit():
+            self.logger.warning(f"Command response dropped due to rate limit. User ID: {user_id}, Command: showlogs")
+            return "⏳ Please wait before sending another command. Rate limit exceeded."
+            
         count = 10  # Default number of logs to show
         
         if args:
@@ -561,84 +909,9 @@ class TelegramBot:
                 f"  ⏰ Time: {timestamp}\n\n"
             )
         
+        # Update the last message time after preparing response
+        self._update_last_message_time()
         return response
-
-    def process_updates(self):
-        """
-        Process incoming updates using long polling.
-        
-        Returns:
-            list: List of processed updates
-        """
-        try:
-            # Get updates with the last update ID to avoid processing old updates
-            params = {
-                'offset': self.last_update_id + 1,
-                'timeout': 20  # 20 second timeout for long polling
-            }
-            
-            response = requests.get(f"{self.base_url}/getUpdates", params=params, timeout=30)
-            
-            if response.status_code == 200:
-                result = response.json()
-                
-                if result.get('ok'):
-                    updates = result.get('result', [])
-                    
-                    for update in updates:
-                        # Update the last update ID to prevent processing the same update again
-                        self.last_update_id = max(self.last_update_id, update.get('update_id', 0))
-                        
-                        # Process the update
-                        self._process_single_update(update)
-                    
-                    return updates
-                else:
-                    self.logger.error(f"Failed to get updates: {result.get('description')}")
-                    return []
-            else:
-                self.logger.error(f"Failed to get updates: {response.status_code} - {response.text}")
-                return []
-        except Exception as e:
-            self.logger.error(f"Error processing updates: {e}")
-            return []
-
-    def _process_single_update(self, update):
-        """
-        Process a single update from Telegram.
-        
-        Args:
-            update (dict): The update object from Telegram API
-        """
-        try:
-            # Check if the update contains a message
-            if 'message' in update:
-                message = update['message']
-                chat_id = message['chat']['id']
-                user_id = message['from']['id'] if 'from' in message else chat_id
-                text = message.get('text', '')
-                
-                # Check if it's a command
-                if text.startswith('/'):
-                    # Parse the command and arguments
-                    parts = text.split(' ', 1)
-                    command = parts[0][1:].lower()  # Remove the '/' and convert to lowercase
-                    args = parts[1].split() if len(parts) > 1 else []
-                    
-                    # Handle the command
-                    response = self.handle_command(user_id, command, args)
-                    
-                    # Send response back to the user
-                    self.send_message(chat_id, response, timeout=30)
-                else:
-                    # Not a command, send a helpful message
-                    help_message = "ℹ️ I only respond to commands. Use /help to see available commands."
-                    self.send_message(chat_id, help_message, timeout=30)
-            else:
-                # Update doesn't contain a message, might be other types of updates
-                self.logger.debug(f"Received non-message update: {update}")
-        except Exception as e:
-            self.logger.error(f"Error processing update: {e}")
 
     def start_polling(self):
         """
@@ -647,25 +920,30 @@ class TelegramBot:
         """
         self.logger.info("Starting Telegram bot polling...")
         
-        import time
         try:
-            while True:
-                try:
-                    # Process any new updates
-                    self.process_updates()
-                    
-                    # Small delay to prevent excessive API calls
-                    time.sleep(1)
-                except KeyboardInterrupt:
-                    self.logger.info("Polling interrupted by user")
-                    break
-                except Exception as e:
-                    self.logger.error(f"Error in polling loop: {e}")
-                    time.sleep(5)  # Wait 5 seconds before retrying
+            # Run the application with polling - this handles the entire lifecycle
+            self.application.run_polling(allowed_updates=Update.ALL_TYPES)
+        except KeyboardInterrupt:
+            self.logger.info("Polling interrupted by user")
         except Exception as e:
             self.logger.error(f"Critical error in polling: {e}")
         finally:
             self.logger.info("Telegram bot polling stopped")
+
+    def cleanup(self):
+        """
+        Clean up resources used by the Telegram bot.
+        """
+        self.logger.info("Cleaning up Telegram bot resources...")
+        
+        # Stop the queue processor
+        self.queue_processor_running = False
+        
+        # Wait for the queue processor thread to finish
+        if self.queue_processor_thread and self.queue_processor_thread.is_alive():
+            self.queue_processor_thread.join(timeout=2)  # Wait up to 2 seconds
+        
+        self.logger.info("Telegram bot cleanup complete")
 
     def run_bot_in_thread(self):
         """

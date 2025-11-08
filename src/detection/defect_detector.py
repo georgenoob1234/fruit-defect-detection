@@ -8,6 +8,7 @@ import cv2
 import numpy as np
 from pathlib import Path
 from ultralytics import YOLO
+from src.utils.segmentation_postprocessor import SegmentationPostProcessor, convert_raw_model_output_to_masks
 
 
 class DefectSegmenter:
@@ -15,7 +16,8 @@ class DefectSegmenter:
     A class to handle defect segmentation using a YOLO segmentation model.
     """
     
-    def __init__(self, model_path, confidence_threshold=0.5, target_classes=None):
+    def __init__(self, model_path, confidence_threshold=0.5, target_classes=None,
+                 post_process_masks=True, post_processor_params=None):
         """
         Initialize the defect segmenter with the provided model.
         
@@ -23,10 +25,19 @@ class DefectSegmenter:
             model_path (str): Path to the YOLO segmentation model file
             confidence_threshold (float): Minimum confidence for segmentation (0.0-1.0)
             target_classes (list): List of defect classes the model should detect
+            post_process_masks (bool): Whether to apply post-processing to segmentation masks
+            post_processor_params (dict): Parameters for the post-processor
         """
         self.model_path = model_path
         self.confidence_threshold = confidence_threshold
         self.target_classes = target_classes or ['defect', 'defective']
+        self.post_process_masks = post_process_masks
+        
+        # Initialize post-processor if enabled
+        if post_process_masks:
+            self.post_processor = SegmentationPostProcessor(**(post_processor_params or {}))
+        else:
+            self.post_processor = None
         
         # Load the YOLO segmentation model
         self.model = YOLO(model_path)
@@ -37,6 +48,7 @@ class DefectSegmenter:
         self.logger.info(f"Defect segmenter initialized with model: {model_path}")
         self.logger.info(f"Confidence threshold: {confidence_threshold}")
         self.logger.info(f"Target classes: {self.target_classes}")
+        self.logger.info(f"Post-processing enabled: {post_process_masks}")
     
     def segment_defects(self, fruit_region):
         """
@@ -65,11 +77,11 @@ class DefectSegmenter:
                 self.logger.info(f"Processing result - has masks: {result.masks is not None}, has boxes: {result.boxes is not None}")
                 
                 if result.masks is not None:
-                    # Process segmentation masks
-                    for i, mask in enumerate(result.masks.data):
-                        # Convert mask to numpy array
-                        mask_np = mask.cpu().numpy()
-                        
+                    # Convert raw model output to proper segmentation masks
+                    raw_masks = convert_raw_model_output_to_masks(result, confidence_threshold=0.5, mask_format='binary')
+                    
+                    # Process each mask
+                    for i, mask_np in enumerate(raw_masks):
                         # Get the corresponding class and confidence
                         if result.boxes is not None and i < len(result.boxes):
                             box = result.boxes[i]
@@ -92,6 +104,14 @@ class DefectSegmenter:
                             has_defects = True
                             masks.append(mask_np)
                             self.logger.info(f"Found mask without box, treating as defect")
+            
+            # Apply post-processing to masks if enabled
+            if self.post_process_masks and masks:
+                self.logger.info(f"Applying post-processing to {len(masks)} masks")
+                masks = self.post_processor.post_process_masks(masks, fruit_region.shape[:2])
+                # Update has_defects based on post-processed masks
+                has_defects = len(masks) > 0
+                self.logger.info(f"After post-processing: {len(masks)} masks remain")
             
             self.logger.info(f"Defect segmentation complete: {len(masks)} masks found, max confidence: {max_confidence:.2f}, has defects: {has_defects}")
             

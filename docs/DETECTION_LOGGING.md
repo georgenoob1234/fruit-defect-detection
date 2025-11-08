@@ -9,11 +9,12 @@ The detection logging system maintains a record of all detection events in the a
 ## Features
 
 ### 1. Automatic Detection Logging
-- Every detection event is automatically logged when processed by the system (no debouncing)
+- Every detection event is automatically logged when processed by the system (no deduplication applied to logging)
 - Each log entry includes:
   - Timestamp of the detection
- - Detection data (fruit class, defective status, confidence, bounding box, image path)
+  - Detection data (fruit class, defective status, confidence, bounding box, image path)
 - The system maintains the last 100 logs to prevent memory issues
+- Logging occurs regardless of whether notifications are sent (based on deduplication logic)
 
 ### 2. Log Storage
 - Detection logs are stored in memory within the `TelegramBot` class

@@ -369,6 +369,7 @@ The training script automatically downloads the required pre-trained models:
 
 - **Fruit Detection**: `yolov8n.pt` - A detection model pre-trained on COCO dataset
 - **Defect Segmentation**: `yolov8n-seg.pt` - A segmentation model pre-trained on COCO dataset
+- **Defect Classification**: `yolov8n-cls.pt` - A classification model pre-trained on ImageNet dataset
 
 These models are downloaded automatically by the Ultralytics library when first needed and cached in the system's default location (typically in the user's home directory under `.ultralytics`).
 
@@ -377,9 +378,55 @@ These models are downloaded automatically by the Ultralytics library when first 
 After training is completed, the final trained models are saved in the appropriate subdirectories within the `models/` directory:
 
 - **Fruit Detection Models**: Saved to `models/fruit_detection/` as `fruit_detector.pt`
+- **Defect Classification Models**: Saved to `models/defect_classification/` as `defect_classifier.pt`
 - **Defect Segmentation Models**: Saved to `models/defect_segmentation/` as `defect_segmenter.pt`
 
 The training results, logs, and checkpoints during training are saved in the directory specified by the `save_dir` parameter in the configuration file (default: `runs/train`).
+
+### Advanced Training Features
+
+#### Custom Loss Functions
+The defect segmentation model supports custom loss functions including:
+- **Dice Loss**: For better handling of imbalanced segmentation masks
+- **Focal Loss**: For focusing on hard examples during training
+- **Combined Losses**: Automatic combination of standard and custom losses
+
+These can be configured in the `defect_segmentation` section of your configuration file:
+```yaml
+defect_segmentation:
+ # ... other parameters
+  loss_function: 'auto'  # Options: 'auto', 'dice', 'focal', 'ce' (cross-entropy)
+```
+
+#### Environmental Augmentations
+The training system includes advanced environmental augmentation capabilities to improve model robustness:
+- **Glare simulation**: For handling bright lighting conditions
+- **Shadow augmentation**: For varying lighting conditions
+- **Blur effects**: To improve robustness to motion blur
+- **Low-light simulation**: For poor visibility conditions
+
+These can be enabled/disabled in the configuration:
+```yaml
+defect_segmentation:
+ # ... other parameters
+  augment_env_effects: true # Enable environmental augmentations
+  auto_augment: 'randaugment'  # Auto augmentation policy
+```
+
+#### Advanced Training Parameters
+The system supports additional training parameters for fine-tuning:
+- **Patience**: Number of epochs to wait before early stopping
+- **Warmup epochs**: Number of epochs for learning rate warmup
+- **Cosine LR scheduling**: Cosine annealing for learning rate scheduling
+
+Example configuration:
+```yaml
+defect_segmentation:
+  # ... other parameters
+  patience: 100
+  warmup_epochs: 3
+  cosine_lr: true
+```
 
 ## Troubleshooting
 

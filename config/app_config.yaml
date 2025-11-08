@@ -8,7 +8,7 @@ logging:
 # GUI Settings
 gui:
   show_gui: true
-  show_defect_status: true  # When true, shows both fruit type and defect status; when false, shows only fruit type
+  show_defect_status: true  # When true, shows both fruit type and defect status; when true, shows only fruit type
 
 # Web API Settings
 api:
@@ -31,6 +31,12 @@ static_image:
 
 # Photo Capture Settings
 photo_capture:
-  capture_defective_only: false  # When true, only captures photos of defective fruits; when false, captures all detected fruits
-  image_save_path: "/home/george/PycharmProjects/fruit-web-api/captured_photos"  # Directory where captured photos will be saved
-  image_format: "jpg"  # Format for saved images (jpg, png, etc.)
+  capture_defective_only: false  # When true, only captures photos of defective fruits; when true, captures all detected fruits
+  image_save_path: "/home/george/PycharmProjects/fruit-defect-detection/captured_photos"  # Directory where captured photos will be saved
+  image_format: "jpg" # Format for saved images (jpg, png, etc.)
+  max_images: 10  # Maximum number of images to retain in the folder
+  cleanup_interval: 30  # Interval in seconds between cleanup checks
+
+# Debouncing Settings
+debouncing:
+  detection_debounce_time: 1  # Minimum time in seconds between detections of the same fruit class (default: 1 second)

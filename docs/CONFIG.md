@@ -163,7 +163,7 @@ defect_classification:
 
 # Defect Segmentation Model Configuration
 defect_segmentation:
-  enabled: true
+ enabled: true
   model_path: "models/defect_segmentation/defect_segmenter.pt"
   model_name: "yolov8n-seg.pt"
   dataset_path: "datasets/defect_segmentation_dataset.yaml"
@@ -176,10 +176,19 @@ defect_segmentation:
   batch_size: 8
   learning_rate: 0.001
   save_dir: "runs/segment/defect_segmenter"
+  save_period: 10  # Save checkpoint every N epochs
   
   num_classes: 1
   class_names: ["defect"]
   confidence_threshold: 0.6
+  
+  # Advanced training parameters
+  loss_function: 'auto'  # Options: 'auto', 'dice', 'focal', 'ce' (cross-entropy)
+ patience: 100  # Number of epochs to wait without improvement before early stopping
+  warmup_epochs: 3  # Number of warmup epochs
+  cosine_lr: true # Whether to use cosine learning rate scheduling
+ augment_env_effects: true  # Whether to apply environmental augmentations (glare, shadows, blur)
+  auto_augment: 'randaugment'  # Auto augmentation policy (e.g., 'randaugment', 'autoaugment')
 
 # Hardware and Performance Settings
 hardware:

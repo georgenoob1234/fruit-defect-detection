@@ -1,7 +1,7 @@
 """
 Detection Pipeline module for the Fruit Defect Detection System.
 
-This module orchestrates the detection process, coordinating between 
+This module orchestrates the detection process, coordinating between
 fruit detection and defect segmentation models.
 """
 import logging
@@ -9,6 +9,9 @@ import cv2
 import time
 from datetime import datetime
 from pathlib import Path
+from src.detection.fruit_detector import FruitDetector
+from src.detection.defect_detector import DefectSegmenter
+from src.utils.ood_detector import OODDetector, apply_ood_filtering
 
 
 class DetectionPipeline:
@@ -17,7 +20,7 @@ class DetectionPipeline:
     and defect segmentation models.
     """
     
-    def __init__(self, fruit_detector, defect_segmenter, api_handler=None):
+    def __init__(self, fruit_detector, defect_segmenter, api_handler=None, ood_detector=None):
         """
         Initialize the detection pipeline with required components.
         
@@ -25,18 +28,22 @@ class DetectionPipeline:
             fruit_detector: Instance of FruitDetector
             defect_segmenter: Instance of DefectSegmenter (can be None if defect detection is disabled)
             api_handler: Optional APIHandler instance for sending data
+            ood_detector: Optional OODDetector instance for out-of-distribution detection
         """
         self.fruit_detector = fruit_detector
         self.defect_segmenter = defect_segmenter
         self.api_handler = api_handler
+        self.ood_detector = ood_detector
         
         # Check if defect detection is enabled based on whether defect_segmenter is provided
         self.defect_detection_enabled = defect_segmenter is not None
+        self.ood_detection_enabled = ood_detector is not None and ood_detector.enable_ood_detection
         
         # Setup logging
         self.logger = logging.getLogger(__name__)
         
         self.logger.info("Detection pipeline initialized")
+        self.logger.info(f"OOD detection enabled: {self.ood_detection_enabled}")
     
     def process_frame(self, frame):
         """
@@ -59,6 +66,19 @@ class DetectionPipeline:
             
             self.logger.info(f"Found {len(fruit_detections)} fruit detections in frame")
             
+            # Step 1.5: Apply OOD detection if enabled
+            if self.ood_detection_enabled:
+                self.logger.info("Applying OOD detection filtering...")
+                filtered_detections = apply_ood_filtering(fruit_detections, self.ood_detector, frame)
+                self.logger.info(f"After OOD filtering: {len(filtered_detections)} detections remain")
+                
+                # If frame is OOD, return empty results
+                if len(filtered_detections) == 0 and len(fruit_detections) > 0:
+                    self.logger.info("Frame detected as OOD, returning no detections")
+                    return [], frame
+            else:
+                filtered_detections = fruit_detections
+            
             results = []
             
             # Initialize segmented_frame to the original frame
@@ -66,7 +86,7 @@ class DetectionPipeline:
             segmented_frame = frame
             
             # Step 2: For each detected fruit, segment defects (if defect detection is enabled)
-            for i, detection in enumerate(fruit_detections):
+            for i, detection in enumerate(filtered_detections):
                 fruit_class = detection['fruit_class']
                 fruit_confidence = detection['confidence']
                 bbox = detection['bbox']
@@ -75,9 +95,17 @@ class DetectionPipeline:
                 
                 if self.defect_detection_enabled:
                     # Extract the fruit region and segment defects
-                    has_defects, defect_confidence, masks, segmented_frame = self.defect_segmenter.segment_fruit_defects(frame, bbox)
-                    is_defective = has_defects
-                    self.logger.info(f"Defect detection result: has_defects={has_defects}, defect_confidence={defect_confidence:.2f}, masks_count={len(masks)}")
+                    try:
+                        has_defects, defect_confidence, masks, segmented_frame = self.defect_segmenter.segment_fruit_defects(frame, bbox)
+                        is_defective = has_defects
+                        self.logger.info(f"Defect detection result: has_defects={has_defects}, defect_confidence={defect_confidence:.2f}, masks_count={len(masks)}")
+                    except Exception as e:
+                        self.logger.error(f"Error in defect segmentation: {e}")
+                        is_defective = False
+                        defect_confidence = 0.0
+                        masks = []
+                        # Continue with original frame if segmentation fails
+                        segmented_frame = frame
                 else:
                     # If defect detection is disabled, default to non-defective
                     is_defective = False
@@ -106,6 +134,8 @@ class DetectionPipeline:
             
         except Exception as e:
             self.logger.error(f"Error processing frame: {e}")
+            import traceback
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
             return [], frame
     
     def process_detection(self, detection_result, frame):

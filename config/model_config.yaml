@@ -3,17 +3,37 @@
 # Fruit Detection Model Settings
 fruit_detection:
   model_path: "models/fruit_detection/fruit_detector.pt"
-  confidence_threshold: 0.5  # Standard threshold for fruit detection
+  confidence_threshold: 0.7    # Standard threshold for fruit detection
   target_classes:
     - apple
-    - tomato
     - banana
+    - tomato
 
 
-# Defect Classification/Segmentation Model Settings
-defect_detection:
-  enabled: true  # Set to false to disable defect detection and only use fruit detection
+# Defect Segmentation Model Settings
+defect_segmentation:
+  enabled: true  # Set to false to disable defect segmentation and only use fruit detection
+  task_type: "segmentation"  # Specifies that this model performs segmentation rather than classification
   model_path: "models/defect_segmentation/defect_segmenter.pt"
-  confidence_threshold: 0.5  # Lower threshold to catch more potential defects
+  confidence_threshold: 0.3  # Lower threshold to catch more potential defects
+  segmentation_params:
+    mask_overlap_threshold: 0.5  # Minimum overlap threshold for mask matching
+    mask_score_threshold: 0.5    # Minimum score threshold for mask predictions
+    mask_area_threshold: 0.0001    # Minimum area threshold for valid masks (as fraction of image area)
   target_classes:
     - defect
+  uncertainty_quantification:
+    enabled: true
+    method: "monte_carlo_dropout"  # Options: "monte_carlo_dropout", "ensemble", "bayesian"
+    mc_samples: 10 # Number of Monte Carlo samples for uncertainty estimation
+    uncertainty_threshold: 0.2  # Threshold for uncertainty-based filtering of predictions
+
+# Out-of-Distribution Detection Settings
+ood_detection:
+  enabled: true  # Set to false to disable OOD detection
+  ood_threshold: 0.3  # Threshold for OOD detection (lower = more sensitive)
+  confidence_threshold: 0.5  # Minimum confidence for valid detections
+  max_class_variance: 0.7  # Maximum variance allowed in class predictions
+  min_detection_ratio: 0.1  # Minimum ratio of known classes to total detections
+  known_classes: ['apple', 'banana', 'tomato']  # Known fruit classes for OOD detection
+

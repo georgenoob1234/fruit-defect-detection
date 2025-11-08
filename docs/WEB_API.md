@@ -63,6 +63,9 @@ API requests are sent when:
 2. The debouncing time has passed since the last detection of the same fruit class
 3. API integration is enabled in the configuration
 4. The detection processing is successful
+5. The fruit is defective (when `capture_defective_only` is set to true in photo_capture settings) or always if `capture_defective_only` is false
+
+**Note**: The `capture_defective_only` setting in `config/app_config.yaml` controls whether images are sent to the API. When set to `true`, only images of defective fruits are sent to the API, while detection data is still sent for all detections. When set to `false`, images are sent for all detections.
 
 ## Implementation Details
 

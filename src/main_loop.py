@@ -61,13 +61,31 @@ class MainLoop:
         self.capture_defective_only = config['photo_capture']['capture_defective_only']
         self.image_save_path = config['photo_capture']['image_save_path']
         self.image_format = config['photo_capture']['image_format']
-        self.telegram_user_ids = config.get('telegram_user_ids', [])
+        # Get telegram user IDs from the telegram users config file
+        import yaml
+        from pathlib import Path
+        
+        telegram_users_config_path = 'config/telegram_users.yaml'
+        telegram_users_config = {}
+        if Path(telegram_users_config_path).exists():
+            with open(telegram_users_config_path, 'r') as file:
+                telegram_users_config = yaml.safe_load(file)
+        
+        self.telegram_user_ids = telegram_users_config.get('telegram_users', {}).get('user_ids', [])
         
         # Debouncing tracking
         self.last_detection_times = {}
         
-        # Deduplication tracking - tracks the last sent detection for each fruit class
-        self.last_sent_detection = {}  # key: fruit_class, value: dict with is_defective and other properties (excluding confidence)
+        # Initialize cooldown configuration from telegram settings
+        telegram_config = config.get('telegram', {})
+        self.telegram_cooldown_config = telegram_config.get('cooldown', {
+            'enabled': True,
+            'duration': 30,  # 30 seconds default
+            'track_by': ['fruit_class', 'is_defective']
+        })
+        
+        # Debouncing tracking
+        self.last_detection_times = {}
         
         # Detection status tracking
         self.current_detection_count = 0
@@ -116,59 +134,6 @@ class MainLoop:
         
         return False
 
-    def _is_duplicate_detection(self, detection_data):
-        """
-        Check if this detection is a duplicate that should be suppressed.
-        Only suppress notifications if it's the same fruit type with same defect status and properties
-        (excluding confidence values which naturally vary).
-        
-        Args:
-            detection_data (dict): Detection information to check
-            
-        Returns:
-            bool: True if this is a duplicate that should be suppressed, False otherwise
-        """
-        fruit_class = detection_data['fruit_class']
-        is_defective = detection_data['is_defective']
-        
-        # Create a key for comparison that excludes confidence (which naturally varies)
-        detection_key = (
-            detection_data['fruit_class'],
-            detection_data['is_defective']
-        )
-        
-        # Check if we have sent a notification for this fruit class before
-        if fruit_class in self.last_sent_detection:
-            # Compare with the last sent detection for this fruit class
-            last_detection = self.last_sent_detection[fruit_class]
-            
-            # Create a key for the last sent detection
-            last_detection_key = (
-                last_detection['fruit_class'],
-                last_detection['is_defective']
-            )
-            
-            # If keys match, this is a duplicate
-            if detection_key == last_detection_key:
-                return True
-        
-        # This is a new detection or different from the last one sent
-        return False
-
-
-    def _update_last_sent_detection(self, detection_data):
-        """
-        Update the tracking for the last sent detection of this fruit class.
-        
-        Args:
-            detection_data (dict): Detection information that was sent
-        """
-        fruit_class = detection_data['fruit_class']
-        # Store the detection properties that define uniqueness (fruit class and defect status)
-        self.last_sent_detection[fruit_class] = {
-            'fruit_class': detection_data['fruit_class'],
-            'is_defective': detection_data['is_defective']
-        }
 
 
     def capture_photo(self, frame, fruit_class, is_defective, detection_data):
@@ -321,7 +286,7 @@ class MainLoop:
                                                       detection_data['is_defective'], detection_data)
                         detection_data['image_path'] = image_path
                         
-                        # Check debouncing for processing (API/Telegram notifications)
+                        # Check debouncing for API processing only
                         if self.should_process_detection(fruit_class):
                             # Send to API if enabled
                             if self.api_enabled:
@@ -336,31 +301,20 @@ class MainLoop:
                                 except Exception as e:
                                     self.logger.error(f"Error sending detection to API: {e}")
                             
-                            # Send to Telegram if bot is available and enabled
-                            if self.telegram_bot and self.telegram_enabled:
-                                try:
-                                    # Check if this detection is a duplicate that should be suppressed
-                                    if not self._is_duplicate_detection(detection_data):
-                                        # Log the detection with image path before sending notification
-                                        self.telegram_bot.log_detection(detection_data)
-                                        self._send_telegram_notification(detection_data, image_path)
-                                        # Update the tracking for the last sent detection
-                                        self._update_last_sent_detection(detection_data)
-                                    else:
-                                        self.logger.info(f"Suppressed duplicate notification for {detection_data['fruit_class']} (defective: {detection_data['is_defective']})")
-                                except Exception as e:
-                                    self.logger.error(f"Error sending Telegram notification: {e}")
-                                    
                             self.logger.info(f"Processed detection: {fruit_class}, defective: {detection_data['is_defective']}, confidence: {detection_data['confidence']:.2f}")
                         else:
-                            # Still log the detection but don't send notifications
-                            if self.telegram_bot and self.telegram_enabled:
-                                try:
-                                    # Log the detection even if we don't send notifications
-                                    self.telegram_bot.log_detection(detection_data)
-                                    self.logger.info(f"Logged detection (debounced): {fruit_class}, defective: {detection_data['is_defective']}, confidence: {detection_data['confidence']:.2f}")
-                                except Exception as e:
-                                    self.logger.error(f"Error logging detection: {e}")
+                            # Still log the detection but don't send API notifications
+                            self.logger.info(f"Logged detection (debounced for API): {fruit_class}, defective: {detection_data['is_defective']}, confidence: {detection_data['confidence']:.2f}")
+                        
+                        # Send Telegram notification for ALL detections (not just non-debounced ones)
+                        if self.telegram_bot and self.telegram_enabled:
+                            try:
+                                # Log the detection with image path before sending notification
+                                self.telegram_bot.log_detection(detection_data)
+                                self._send_telegram_notification(detection_data, image_path)
+                                self.logger.info(f"Sent Telegram notification: {fruit_class}, defective: {detection_data['is_defective']}, confidence: {detection_data['confidence']:.2f}")
+                            except Exception as e:
+                                self.logger.error(f"Error sending Telegram notification: {e}")
                 except Exception as e:
                     self.logger.error(f"Error during detection processing: {e}")
                     # Continue the loop even if there's an error in detection processing
@@ -393,6 +347,13 @@ class MainLoop:
         # Clean up detection status logger if it exists
         if hasattr(self, 'detection_status_logger'):
             self.detection_status_logger.cleanup()
+        
+        # Clean up telegram bot if it exists
+        if self.telegram_bot:
+            try:
+                self.telegram_bot.cleanup()
+            except Exception as e:
+                self.logger.error(f"Error cleaning up telegram bot: {e}")
         
         self.camera_handler.stop()
         

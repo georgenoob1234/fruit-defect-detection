@@ -7,4 +7,6 @@ torch
 onnx
 psutil
 gputil
+watchdog
 scikit-learn
+python-telegram-bot
