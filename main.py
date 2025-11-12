@@ -319,45 +319,32 @@ class FruitDefectDetectionApp:
                         image_path = None
                         self.logger.info("No detections found, skipping photo capture")
                     
-                    # Process detection results
+                    # Process detection results for API - consolidate to single call
+                    if self.api_enabled and detection_results:
+                        try:
+                            # Prepare consolidated API detection data
+                            # Only send image to API if at least one fruit is defective
+                            at_least_one_defective = any(detection['is_defective'] for detection in all_detection_data)
+                            api_image_path = image_path if at_least_one_defective else None
+                            
+                            # Send consolidated detection data to API
+                            self._send_consolidated_api_detection(all_detection_data, api_image_path)
+                            self.logger.info(f"Consolidated detection data sent to API for {len(all_detection_data)} fruits")
+                        except Exception as e:
+                            self.logger.error(f"Error sending consolidated detection to API: {e}")
+                    
+                    # Send single consolidated Telegram notification for all detections in the frame
+                    if self.telegram_enabled and detection_results:
+                        try:
+                            self._send_consolidated_telegram_notification(all_detection_data, image_path)
+                        except Exception as e:
+                            self.logger.error(f"Error sending consolidated Telegram notification: {e}")
+                    
+                    # Log individual detections for processing reference
                     for i, result in enumerate(detection_results):
                         fruit_class = result['fruit_class']
                         is_defective = result['is_defective']
                         confidence = result['confidence']
-                        bbox = result['bbox']
-                        
-                        # Get the corresponding detection data
-                        detection_data = all_detection_data[i]
-                        detection_data['image_path'] = image_path
-                        
-                        # Create API-specific detection data (without bbox, with image_path)
-                        api_detection_data = {
-                            'fruit_class': detection_data['fruit_class'],
-                            'is_defective': detection_data['is_defective'],
-                            'confidence': detection_data['confidence'],
-                            'timestamp': detection_data['timestamp'],
-                            'image_path': image_path
-                        }
-                        # Remove bbox from API data if it exists
-                        if 'bbox' in api_detection_data:
-                            del api_detection_data['bbox']
-                        
-                        # Send to API if enabled
-                        if self.api_enabled:
-                            try:
-                                # Only send image to API if the fruit is defective
-                                api_image_path = image_path if is_defective else None
-                                self.api_handler.send_detection(api_detection_data, api_image_path)
-                                self.logger.info(f"Detection data sent to API: {api_detection_data}")
-                            except Exception as e:
-                                self.logger.error(f"Error sending detection to API: {e}")
-                        
-                        # Send to Telegram if enabled (using internal detection data with bbox)
-                        if self.telegram_enabled:
-                            try:
-                                self._send_telegram_notification(detection_data, image_path)
-                            except Exception as e:
-                                self.logger.error(f"Error sending Telegram notification: {e}")
                         
                         self.logger.info(f"Processed detection: {fruit_class}, defective: {is_defective}, confidence: {confidence:.2f}")
                 except Exception as e:
@@ -374,10 +361,10 @@ class FruitDefectDetectionApp:
                             # Use the existing telegram bot instance to log each detection
                             for detection_data in all_detection_data:
                                 self.telegram_bot.log_detection(detection_data)
-                        # Log the first detection details
-                        first_detection = all_detection_data[0] if all_detection_data else None
-                        if first_detection:
-                            self.logger.info(f"Logged detection: {first_detection['fruit_class']}, defective: {first_detection['is_defective']}, confidence: {first_detection['confidence']:.2f}")
+                        # Log the consolidated detection details
+                        if all_detection_data:
+                            fruit_names = list(set([det['fruit_class'] for det in all_detection_data]))  # Get unique fruit names
+                            self.logger.info(f"Logged detection: {', '.join(fruit_names)}, Total fruits detected: {len(all_detection_data)}")
                     except Exception as e:
                         self.logger.error(f"Error logging detection: {e}")
                 else:
@@ -453,6 +440,93 @@ class FruitDefectDetectionApp:
                     
         except Exception as e:
             self.logger.error(f"Error sending Telegram notification: {e}")
+
+    def _send_consolidated_telegram_notification(self, all_detection_data, image_path=None):
+        """Send a consolidated detection notification via Telegram for all fruits in the frame."""
+        # Check if telegram is enabled and we have a bot instance
+        if not self.telegram_enabled or not self.telegram_bot:
+            return
+            
+        try:
+            # Log all detections for potential retrieval via /showlogs command
+            for detection_data in all_detection_data:
+                self.telegram_bot.log_detection(detection_data)
+            
+            # Consolidate fruit names
+            fruit_names = []
+            defective_status = "No"  # Default to No unless at least one is defective
+            avg_confidence = 0.0
+            
+            for detection in all_detection_data:
+                fruit_class = detection['fruit_class']
+                if fruit_class not in fruit_names:
+                    fruit_names.append(fruit_class)
+                if detection['is_defective']:
+                    defective_status = "Yes"
+                avg_confidence += detection['confidence']
+            
+            avg_confidence = avg_confidence / len(all_detection_data) if all_detection_data else 0.0
+            
+            # Create consolidated message
+            fruit_list = ', '.join(fruit_names)
+            message = (
+                f"🍎 Fruit Detection Alert 🍎\n"
+                f"Fruits: {fruit_list}\n"
+                f"Defective: {defective_status}\n"
+                f"Confidence: {avg_confidence:.2f}\n"
+                f"Time: {datetime.now().isoformat()}"
+            )
+            
+            # Send message to all authorized users asynchronously to avoid blocking
+            for user_id in self.telegram_user_ids:
+                try:
+                    # Use async method to avoid blocking the main thread
+                    self.telegram_bot.send_message_async(user_id, message, image_path, timeout=30)
+                    self.logger.info(f"Started async consolidated Telegram notification to user {user_id} for fruits: {fruit_list}")
+                except Exception as e:
+                    self.logger.error(f"Failed to start async Telegram message to {user_id}: {e}")
+                    
+        except Exception as e:
+            self.logger.error(f"Error sending consolidated Telegram notification: {e}")
+
+    def _send_consolidated_api_detection(self, all_detection_data, image_path=None):
+        """Send consolidated detection data to the API for all fruits in the frame."""
+        if not all_detection_data:
+            return
+            
+        # Consolidate detection data - create a list of all detections in this frame
+        consolidated_data = {
+            'detections': [],  # List of individual detection objects
+            'frame_info': {
+                'total_detections': len(all_detection_data),
+                'timestamp': datetime.now().isoformat(),
+                'image_path': image_path
+            }
+        }
+        
+        # Add each detection to the consolidated data
+        for detection in all_detection_data:
+            detection_info = {
+                'fruit_class': detection['fruit_class'],
+                'is_defective': detection['is_defective'],
+                'confidence': detection['confidence'],
+                'bbox': detection['bbox']  # Include bounding box info if needed by API
+            }
+            consolidated_data['detections'].append(detection_info)
+        
+        # Determine if any detection is defective to decide if we send the image
+        at_least_one_defective = any(detection['is_defective'] for detection in all_detection_data)
+        api_image_path = image_path if at_least_one_defective else None
+        
+        try:
+            # Send the consolidated data to the API
+            success = self.api_handler.send_detection(consolidated_data, api_image_path)
+            if success:
+                self.logger.info(f"Successfully sent consolidated detection data to API: {len(all_detection_data)} fruits detected")
+            else:
+                self.logger.error(f"Failed to send consolidated detection data to API")
+        except Exception as e:
+            self.logger.error(f"Error sending consolidated detection data to API: {e}")
 
     def cleanup(self):
         """Clean up resources."""
