@@ -51,7 +51,7 @@ class APIHandler:
                     
                     # Add detection data as JSON in the form
                     data = {
-                        'detection_data': json.dumps(detection_data)
+                        'detection_data': detection_data  # Send as JSON object, not string
                     }
                     
                     response = requests.post(

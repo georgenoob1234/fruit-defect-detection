@@ -31,7 +31,7 @@ static_image:
 
 # Photo Capture Settings
 photo_capture:
-  capture_defective_only: false  # When true, only captures photos of defective fruits; when true, captures all detected fruits
+  capture_defective_only: true  # When true, only captures photos of defective fruits; when true, captures all detected fruits
   image_save_path: "/home/george/PycharmProjects/fruit-defect-detection/captured_photos"  # Directory where captured photos will be saved
   image_format: "jpg" # Format for saved images (jpg, png, etc.)
   max_images: 10  # Maximum number of images to retain in the folder
